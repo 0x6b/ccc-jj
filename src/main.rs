@@ -80,6 +80,7 @@ fn find_workspace(start_dir: &Path) -> Result<Workspace> {
 
 /// Get the diff between two trees using jj-lib
 async fn get_tree_diff(
+    repo: &jj_lib::repo::ReadonlyRepo,
     from_tree: &jj_lib::merged_tree::MergedTree,
     to_tree: &jj_lib::merged_tree::MergedTree,
 ) -> Result<String> {
@@ -92,17 +93,90 @@ async fn get_tree_diff(
         let path = entry.path;
         let diff_value = entry.values?;
 
-        if diff_value.before.removes().next().is_some() {
-            if diff_value.after.adds().next().is_some() {
-                // Modified file
-                writeln!(diff_output, "Modified {}", path.as_internal_file_string())?;
-            } else {
-                // Removed file
-                writeln!(diff_output, "Removed {}", path.as_internal_file_string())?;
+        // Get the before and after values
+        let before_value = diff_value.before.as_resolved();
+        let after_value = diff_value.after.as_resolved();
+
+        match (before_value, after_value) {
+            (None, Some(Some(after))) => {
+                // Added file
+                writeln!(diff_output, "diff --git a/{0} b/{0}", path.as_internal_file_string())?;
+                writeln!(diff_output, "new file")?;
+                writeln!(diff_output, "--- /dev/null")?;
+                writeln!(diff_output, "+++ b/{}", path.as_internal_file_string())?;
+
+                // Read the file content
+                if let jj_lib::backend::TreeValue::File { id, .. } = after {
+                    let mut reader = repo.store().read_file(&path, id).await?;
+                    let mut content = Vec::new();
+                    tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut content).await?;
+
+                    if let Ok(text) = String::from_utf8(content.clone()) {
+                        for line in text.lines() {
+                            writeln!(diff_output, "+{}", line)?;
+                        }
+                    } else {
+                        writeln!(diff_output, "(binary file)")?;
+                    }
+                }
             }
-        } else if diff_value.after.adds().next().is_some() {
-            // Added file
-            writeln!(diff_output, "Added {}", path.as_internal_file_string())?;
+            (Some(Some(before)), None) => {
+                // Removed file
+                writeln!(diff_output, "diff --git a/{0} b/{0}", path.as_internal_file_string())?;
+                writeln!(diff_output, "deleted file")?;
+                writeln!(diff_output, "--- a/{}", path.as_internal_file_string())?;
+                writeln!(diff_output, "+++ /dev/null")?;
+
+                if let jj_lib::backend::TreeValue::File { id, .. } = before {
+                    let mut reader = repo.store().read_file(&path, id).await?;
+                    let mut content = Vec::new();
+                    tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut content).await?;
+
+                    if let Ok(text) = String::from_utf8(content) {
+                        for line in text.lines() {
+                            writeln!(diff_output, "-{}", line)?;
+                        }
+                    } else {
+                        writeln!(diff_output, "(binary file)")?;
+                    }
+                }
+            }
+            (Some(Some(before)), Some(Some(after))) => {
+                // Modified file
+                writeln!(diff_output, "diff --git a/{0} b/{0}", path.as_internal_file_string())?;
+                writeln!(diff_output, "--- a/{}", path.as_internal_file_string())?;
+                writeln!(diff_output, "+++ b/{}", path.as_internal_file_string())?;
+
+                if let (jj_lib::backend::TreeValue::File { id: before_id, .. },
+                        jj_lib::backend::TreeValue::File { id: after_id, .. }) = (before, after) {
+                    let mut before_reader = repo.store().read_file(&path, before_id).await?;
+                    let mut before_content = Vec::new();
+                    tokio::io::AsyncReadExt::read_to_end(&mut before_reader, &mut before_content).await?;
+
+                    let mut after_reader = repo.store().read_file(&path, after_id).await?;
+                    let mut after_content = Vec::new();
+                    tokio::io::AsyncReadExt::read_to_end(&mut after_reader, &mut after_content).await?;
+
+                    if let (Ok(before_text), Ok(after_text)) =
+                        (String::from_utf8(before_content), String::from_utf8(after_content)) {
+                        // Use a simple diff algorithm
+                        use similar::{ChangeTag, TextDiff};
+                        let diff = TextDiff::from_lines(&before_text, &after_text);
+
+                        for change in diff.iter_all_changes() {
+                            let sign = match change.tag() {
+                                ChangeTag::Delete => "-",
+                                ChangeTag::Insert => "+",
+                                ChangeTag::Equal => " ",
+                            };
+                            write!(diff_output, "{}{}", sign, change)?;
+                        }
+                    } else {
+                        writeln!(diff_output, "(binary file modified)")?;
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -252,7 +326,7 @@ async fn main() -> Result<()> {
 
     // Generate diff for commit message (using jj-lib API, not external command)
     println!("Getting diff...");
-    let diff = get_tree_diff(&parent_tree, &current_tree).await?;
+    let diff = get_tree_diff(&repo, &parent_tree, &current_tree).await?;
 
     if diff.trim().is_empty() {
         println!("No changes to commit");

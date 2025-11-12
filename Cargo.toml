@@ -10,3 +10,4 @@ anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
 dirs = "5.0"
 futures = "0.3"
+similar = "2.6"
