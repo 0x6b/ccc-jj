@@ -85,26 +85,48 @@ async fn read_file_content(
     id: &jj_lib::backend::FileId,
 ) -> Result<Vec<u8>> {
     use tokio::io::AsyncReadExt;
-    let mut reader = repo.store().read_file(path, id).await?;
     let mut content = Vec::new();
-    reader.read_to_end(&mut content).await?;
+    repo.store().read_file(path, id).await?.read_to_end(&mut content).await?;
     Ok(content)
 }
 
-/// Format added or removed file lines with truncation
-fn format_file_lines(lines: &[&str], prefix: char, max_lines: usize) -> String {
+/// Format file diff (added/removed) with line truncation
+async fn format_added_removed_diff(
+    repo: &jj_lib::repo::ReadonlyRepo,
+    path: &jj_lib::repo_path::RepoPath,
+    path_str: &str,
+    id: &jj_lib::backend::FileId,
+    is_added: bool,
+    max_lines: usize,
+) -> Result<String> {
     use std::fmt::Write;
-    let mut output = String::new();
 
-    for line in lines.iter().take(max_lines) {
-        let _ = writeln!(output, "{}{}", prefix, line);
+    let (status, from, to) = if is_added {
+        ("new file", "/dev/null".to_string(), format!("b/{}", path_str))
+    } else {
+        ("deleted file", format!("a/{}", path_str), "/dev/null".to_string())
+    };
+
+    let mut output = format!("diff --git a/{0} b/{0}\n{status}\n--- {from}\n+++ {to}\n", path_str);
+    let content = read_file_content(repo, path, id).await?;
+
+    match String::from_utf8(content) {
+        Ok(text) => {
+            let lines: Vec<_> = text.lines().collect();
+            let prefix = if is_added { '+' } else { '-' };
+
+            lines.iter().take(max_lines).for_each(|line| {
+                let _ = writeln!(output, "{}{}", prefix, line);
+            });
+
+            if lines.len() > max_lines {
+                let _ = writeln!(output, "... ({} more lines)", lines.len() - max_lines);
+            }
+        }
+        Err(_) => writeln!(output, "(binary file)")?,
     }
 
-    if lines.len() > max_lines {
-        let _ = writeln!(output, "... ({} more lines)", lines.len() - max_lines);
-    }
-
-    output
+    Ok(output)
 }
 
 /// Get the diff between two trees using jj-lib
@@ -113,48 +135,28 @@ async fn get_tree_diff(
     from_tree: &jj_lib::merged_tree::MergedTree,
     to_tree: &jj_lib::merged_tree::MergedTree,
 ) -> Result<String> {
-    use std::fmt::Write;
     use jj_lib::backend::TreeValue;
     use similar::TextDiff;
 
     const MAX_LINES: usize = 50;
     const CONTEXT_LINES: usize = 2;
 
-    let mut diff_output = String::new();
-    let mut diff_stream = from_tree.diff_stream(to_tree, &jj_lib::matchers::EverythingMatcher);
+    let mut output = String::new();
+    let mut stream = from_tree.diff_stream(to_tree, &jj_lib::matchers::EverythingMatcher);
 
-    while let Some(entry) = diff_stream.next().await {
+    while let Some(entry) = stream.next().await {
         let path_str = entry.path.as_internal_file_string();
-        let diff_value = entry.values?;
+        let values = entry.values?;
 
-        match (diff_value.before.as_resolved(), diff_value.after.as_resolved()) {
-            (None, Some(Some(TreeValue::File { id, .. }))) => {
-                // Added file
-                writeln!(diff_output, "diff --git a/{0} b/{0}\nnew file\n--- /dev/null\n+++ b/{0}", path_str)?;
+        output.push_str(&match (values.before.as_resolved(), values.after.as_resolved()) {
+            (None, Some(Some(TreeValue::File { id, .. }))) =>
+                format_added_removed_diff(repo, &entry.path, &path_str, id, true, MAX_LINES).await?,
 
-                let content = read_file_content(repo, &entry.path, id).await?;
-                if let Ok(text) = String::from_utf8(content) {
-                    let lines: Vec<&str> = text.lines().collect();
-                    diff_output.push_str(&format_file_lines(&lines, '+', MAX_LINES));
-                } else {
-                    writeln!(diff_output, "(binary file)")?;
-                }
-            }
-            (Some(Some(TreeValue::File { id, .. })), None) => {
-                // Removed file
-                writeln!(diff_output, "diff --git a/{0} b/{0}\ndeleted file\n--- a/{0}\n+++ /dev/null", path_str)?;
+            (Some(Some(TreeValue::File { id, .. })), None) =>
+                format_added_removed_diff(repo, &entry.path, &path_str, id, false, MAX_LINES).await?,
 
-                let content = read_file_content(repo, &entry.path, id).await?;
-                if let Ok(text) = String::from_utf8(content) {
-                    let lines: Vec<&str> = text.lines().collect();
-                    diff_output.push_str(&format_file_lines(&lines, '-', MAX_LINES));
-                } else {
-                    writeln!(diff_output, "(binary file)")?;
-                }
-            }
             (Some(Some(TreeValue::File { id: before_id, .. })),
              Some(Some(TreeValue::File { id: after_id, .. }))) => {
-                // Modified file
                 let (before_content, after_content) = tokio::try_join!(
                     read_file_content(repo, &entry.path, before_id),
                     read_file_content(repo, &entry.path, after_id)
@@ -163,19 +165,19 @@ async fn get_tree_diff(
                 match (String::from_utf8(before_content), String::from_utf8(after_content)) {
                     (Ok(before_text), Ok(after_text)) => {
                         let diff = TextDiff::from_lines(&before_text, &after_text);
-                        writeln!(diff_output, "diff --git a/{0} b/{0}", path_str)?;
-                        write!(diff_output, "{}", diff.unified_diff()
-                            .context_radius(CONTEXT_LINES)
-                            .header(&format!("a/{}", path_str), &format!("b/{}", path_str)))?;
+                        format!("diff --git a/{0} b/{0}\n{1}", path_str,
+                            diff.unified_diff()
+                                .context_radius(CONTEXT_LINES)
+                                .header(&format!("a/{}", path_str), &format!("b/{}", path_str)))
                     }
-                    _ => writeln!(diff_output, "diff --git a/{0} b/{0}\n(binary file modified)", path_str)?,
+                    _ => format!("diff --git a/{0} b/{0}\n(binary file modified)\n", path_str),
                 }
             }
-            _ => {}
-        }
+            _ => String::new(),
+        });
     }
 
-    Ok(diff_output)
+    Ok(output)
 }
 
 /// Generate commit message using Claude CLI
