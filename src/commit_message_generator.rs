@@ -98,12 +98,12 @@ impl CommitMessageGenerator {
         let spinner = ProgressBar::new_spinner();
         spinner.set_style(
             ProgressStyle::default_spinner()
-                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+                .tick_chars("✶✸✹✺✹✷")
                 .template("{spinner:.cyan} {msg}")
                 .ok()?,
         );
         spinner.set_message("Generating commit message with Claude...");
-        spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+        spinner.enable_steady_tick(std::time::Duration::from_millis(80));
 
         let prompt = self
             .prompt_template

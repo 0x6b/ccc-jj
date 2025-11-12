@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use indicatif::{ProgressBar, ProgressStyle};
 use jj_lib::config::{ConfigLayer, ConfigSource, StackedConfig};
 use jj_lib::object_id::ObjectId;
 use jj_lib::repo::{Repo, StoreFactories};
@@ -179,18 +178,7 @@ async fn main() -> Result<()> {
     }
 
     // Generate diff for commit message (using jj-lib API, not external command)
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
-            .template("{spinner:.cyan} {msg}")
-            .context("Failed to create progress style")?,
-    );
-    spinner.set_message("Analyzing changes...");
-    spinner.enable_steady_tick(std::time::Duration::from_millis(100));
-
     let diff = get_tree_diff(&repo, &parent_tree, &current_tree).await?;
-    spinner.finish_and_clear();
 
     if diff.trim().is_empty() {
         drop(locked_wc);
