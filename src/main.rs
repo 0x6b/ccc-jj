@@ -152,56 +152,6 @@ fn generate_commit_message(claude_path: &str, diff: &str) -> Result<String> {
     Ok(message)
 }
 
-/// Create a commit with the generated message
-async fn create_commit(
-    workspace: &Workspace,
-    commit_message: &str,
-) -> Result<()> {
-    // Load repo at HEAD
-    let repo: Arc<jj_lib::repo::ReadonlyRepo> = workspace.repo_loader().load_at_head()?;
-
-    // Snapshot the working copy to get a Tree id
-    let mut locked_wc = workspace.working_copy().start_mutation()?;
-    let snapshot_options = SnapshotOptions {
-        base_ignores: jj_lib::gitignore::GitIgnoreFile::empty(),
-        progress: None,
-        start_tracking_matcher: &jj_lib::matchers::EverythingMatcher,
-        max_new_file_size: 1024 * 1024 * 100, // 100 MB
-    };
-    let (tree, _stats) = locked_wc.snapshot(&snapshot_options).await?;
-
-    // Start a transaction and prepare the new commit
-    let mut tx: Transaction = repo.start_transaction();
-    let mut_repo = tx.repo_mut();
-
-    // Get the working-copy commit and use its parents
-    let wc_commit_id = repo
-        .view()
-        .get_wc_commit_id(workspace.workspace_name())
-        .context("workspace should have a working-copy commit")?;
-    let wc_commit = repo.store().get_commit(wc_commit_id)?;
-
-    // Build & write the commit
-    let new_commit = mut_repo
-        .new_commit(wc_commit.parent_ids().to_vec(), tree)
-        .set_description(commit_message)
-        .write()?;
-
-    // Update the working copy to point at the new commit
-    mut_repo.set_wc_commit(workspace.workspace_name().to_owned(), new_commit.id().clone())?;
-
-    // Publish the repo changes and get the new operation
-    let new_repo = tx.commit("auto-commit via ccc-jj")?;
-
-    // Finish the working-copy lock with the operation ID
-    locked_wc.finish(new_repo.operation().id().clone()).await?;
-
-    println!("Committed change {} with message:", new_commit.id().hex());
-    println!("{}", commit_message);
-
-    Ok(())
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -216,12 +166,47 @@ async fn main() -> Result<()> {
     let workspace = find_workspace(&workspace_path)?;
     let workspace_root = workspace.workspace_root().to_path_buf();
 
-    // Get diff
+    // Check if there are actual tree changes before doing anything expensive
+    println!("Checking for changes...");
+    let repo = workspace.repo_loader().load_at_head()?;
+    let wc_commit_id = repo
+        .view()
+        .get_wc_commit_id(workspace.workspace_name())
+        .context("workspace should have a working-copy commit")?;
+    let wc_commit = repo.store().get_commit(wc_commit_id)?;
+
+    // Snapshot to get the current tree
+    let mut locked_wc = workspace.working_copy().start_mutation()?;
+    let snapshot_options = SnapshotOptions {
+        base_ignores: jj_lib::gitignore::GitIgnoreFile::empty(),
+        progress: None,
+        start_tracking_matcher: &jj_lib::matchers::EverythingMatcher,
+        max_new_file_size: 1024 * 1024 * 100,
+    };
+    let (current_tree, _stats) = locked_wc.snapshot(&snapshot_options).await?;
+
+    // Compare with parent tree
+    let has_changes = if !wc_commit.parent_ids().is_empty() {
+        let parent_commit = repo.store().get_commit(&wc_commit.parent_ids()[0])?;
+        let parent_tree = parent_commit.tree();
+        current_tree.tree_ids() != parent_tree.tree_ids()
+    } else {
+        true // No parent means this is the first commit
+    };
+
+    if !has_changes {
+        println!("No changes to commit (working copy tree matches parent)");
+        drop(locked_wc);
+        return Ok(());
+    }
+
+    // Get diff for commit message generation
     println!("Getting diff...");
     let diff = get_diff(&workspace_root)?;
 
     if diff.trim().is_empty() {
         println!("No changes to commit");
+        drop(locked_wc);
         return Ok(());
     }
 
@@ -230,9 +215,42 @@ async fn main() -> Result<()> {
 
     println!("Generated message: {}", commit_message);
 
-    // Create commit
+    // Create commit using the already-snapshotted tree
     println!("Creating commit...");
-    create_commit(&workspace, &commit_message).await?;
+    create_commit_with_tree(&workspace, &commit_message, current_tree, locked_wc).await?;
+
+    Ok(())
+}
+
+/// Create a commit with the generated message using an already-snapshotted tree
+async fn create_commit_with_tree(
+    workspace: &Workspace,
+    commit_message: &str,
+    tree: jj_lib::merged_tree::MergedTree,
+    mut locked_wc: Box<dyn jj_lib::working_copy::LockedWorkingCopy>,
+) -> Result<()> {
+    let repo = workspace.repo_loader().load_at_head()?;
+    let mut tx = repo.start_transaction();
+    let mut_repo = tx.repo_mut();
+
+    let wc_commit_id = repo
+        .view()
+        .get_wc_commit_id(workspace.workspace_name())
+        .context("workspace should have a working-copy commit")?;
+    let wc_commit = repo.store().get_commit(wc_commit_id)?;
+
+    let new_commit = mut_repo
+        .new_commit(wc_commit.parent_ids().to_vec(), tree)
+        .set_description(commit_message)
+        .write()?;
+
+    mut_repo.set_wc_commit(workspace.workspace_name().to_owned(), new_commit.id().clone())?;
+
+    let new_repo = tx.commit("auto-commit via ccc-jj")?;
+    locked_wc.finish(new_repo.operation().id().clone()).await?;
+
+    println!("Committed change {} with message:", new_commit.id().hex());
+    println!("{}", commit_message);
 
     Ok(())
 }

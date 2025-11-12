@@ -68,11 +68,11 @@ ccc-jj --path /path/to/workspace --claude-path /usr/local/bin/claude
 
 ## How It Works
 
-1. **Workspace Discovery**: Searches for a jj workspace starting from the specified directory
-2. **Change Detection**: Snapshots the working copy and compares its tree with the parent commit's tree to detect actual changes
-3. **Diff Extraction**: Runs `jj diff` to get the current changes for message generation
-4. **Message Generation**: Calls Claude CLI with the diff to generate a conventional commit message
-5. **Commit Creation**: Creates a new commit in jj with the generated message
+1. Workspace Discovery: Searches for a jj workspace starting from the specified directory
+2. Change Detection: Snapshots the working copy and compares its tree with the parent commit's tree to detect actual changes
+3. Diff Extraction: Runs `jj diff` to get the current changes for message generation
+4. Message Generation: Calls Claude CLI with the diff to generate a conventional commit message
+5. Commit Creation: Creates a new commit in jj with the generated message
 
 The tool intelligently prevents duplicate commits by comparing tree IDs - if the working copy tree matches the parent commit's tree, no commit is created. This handles jj's behavior of automatically creating new working-copy commits after each commit.
 
