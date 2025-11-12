@@ -78,6 +78,35 @@ fn find_workspace(start_dir: &Path) -> Result<Workspace> {
     Ok(workspace)
 }
 
+/// Read file content from store
+async fn read_file_content(
+    repo: &jj_lib::repo::ReadonlyRepo,
+    path: &jj_lib::repo_path::RepoPath,
+    id: &jj_lib::backend::FileId,
+) -> Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut reader = repo.store().read_file(path, id).await?;
+    let mut content = Vec::new();
+    reader.read_to_end(&mut content).await?;
+    Ok(content)
+}
+
+/// Format added or removed file lines with truncation
+fn format_file_lines(lines: &[&str], prefix: char, max_lines: usize) -> String {
+    use std::fmt::Write;
+    let mut output = String::new();
+
+    for line in lines.iter().take(max_lines) {
+        let _ = writeln!(output, "{}{}", prefix, line);
+    }
+
+    if lines.len() > max_lines {
+        let _ = writeln!(output, "... ({} more lines)", lines.len() - max_lines);
+    }
+
+    output
+}
+
 /// Get the diff between two trees using jj-lib
 async fn get_tree_diff(
     repo: &jj_lib::repo::ReadonlyRepo,
@@ -85,104 +114,61 @@ async fn get_tree_diff(
     to_tree: &jj_lib::merged_tree::MergedTree,
 ) -> Result<String> {
     use std::fmt::Write;
+    use jj_lib::backend::TreeValue;
+    use similar::TextDiff;
+
+    const MAX_LINES: usize = 50;
+    const CONTEXT_LINES: usize = 2;
 
     let mut diff_output = String::new();
-    let mut diff = from_tree.diff_stream(to_tree, &jj_lib::matchers::EverythingMatcher);
+    let mut diff_stream = from_tree.diff_stream(to_tree, &jj_lib::matchers::EverythingMatcher);
 
-    while let Some(entry) = diff.next().await {
-        let path = entry.path;
+    while let Some(entry) = diff_stream.next().await {
+        let path_str = entry.path.as_internal_file_string();
         let diff_value = entry.values?;
 
-        // Get the before and after values
-        let before_value = diff_value.before.as_resolved();
-        let after_value = diff_value.after.as_resolved();
-
-        match (before_value, after_value) {
-            (None, Some(Some(after))) => {
+        match (diff_value.before.as_resolved(), diff_value.after.as_resolved()) {
+            (None, Some(Some(TreeValue::File { id, .. }))) => {
                 // Added file
-                writeln!(diff_output, "diff --git a/{0} b/{0}", path.as_internal_file_string())?;
-                writeln!(diff_output, "new file")?;
-                writeln!(diff_output, "--- /dev/null")?;
-                writeln!(diff_output, "+++ b/{}", path.as_internal_file_string())?;
+                writeln!(diff_output, "diff --git a/{0} b/{0}\nnew file\n--- /dev/null\n+++ b/{0}", path_str)?;
 
-                // Read the file content
-                if let jj_lib::backend::TreeValue::File { id, .. } = after {
-                    let mut reader = repo.store().read_file(&path, id).await?;
-                    let mut content = Vec::new();
-                    tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut content).await?;
-
-                    if let Ok(text) = String::from_utf8(content.clone()) {
-                        let lines: Vec<&str> = text.lines().collect();
-                        let total_lines = lines.len();
-
-                        // Show first 50 lines for new files to keep context reasonable
-                        for line in lines.iter().take(50) {
-                            writeln!(diff_output, "+{}", line)?;
-                        }
-
-                        if total_lines > 50 {
-                            writeln!(diff_output, "... ({} more lines)", total_lines - 50)?;
-                        }
-                    } else {
-                        writeln!(diff_output, "(binary file)")?;
-                    }
+                let content = read_file_content(repo, &entry.path, id).await?;
+                if let Ok(text) = String::from_utf8(content) {
+                    let lines: Vec<&str> = text.lines().collect();
+                    diff_output.push_str(&format_file_lines(&lines, '+', MAX_LINES));
+                } else {
+                    writeln!(diff_output, "(binary file)")?;
                 }
             }
-            (Some(Some(before)), None) => {
+            (Some(Some(TreeValue::File { id, .. })), None) => {
                 // Removed file
-                writeln!(diff_output, "diff --git a/{0} b/{0}", path.as_internal_file_string())?;
-                writeln!(diff_output, "deleted file")?;
-                writeln!(diff_output, "--- a/{}", path.as_internal_file_string())?;
-                writeln!(diff_output, "+++ /dev/null")?;
+                writeln!(diff_output, "diff --git a/{0} b/{0}\ndeleted file\n--- a/{0}\n+++ /dev/null", path_str)?;
 
-                if let jj_lib::backend::TreeValue::File { id, .. } = before {
-                    let mut reader = repo.store().read_file(&path, id).await?;
-                    let mut content = Vec::new();
-                    tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut content).await?;
-
-                    if let Ok(text) = String::from_utf8(content) {
-                        let lines: Vec<&str> = text.lines().collect();
-                        let total_lines = lines.len();
-
-                        // Show first 50 lines for deleted files to keep context reasonable
-                        for line in lines.iter().take(50) {
-                            writeln!(diff_output, "-{}", line)?;
-                        }
-
-                        if total_lines > 50 {
-                            writeln!(diff_output, "... ({} more lines)", total_lines - 50)?;
-                        }
-                    } else {
-                        writeln!(diff_output, "(binary file)")?;
-                    }
+                let content = read_file_content(repo, &entry.path, id).await?;
+                if let Ok(text) = String::from_utf8(content) {
+                    let lines: Vec<&str> = text.lines().collect();
+                    diff_output.push_str(&format_file_lines(&lines, '-', MAX_LINES));
+                } else {
+                    writeln!(diff_output, "(binary file)")?;
                 }
             }
-            (Some(Some(before)), Some(Some(after))) => {
+            (Some(Some(TreeValue::File { id: before_id, .. })),
+             Some(Some(TreeValue::File { id: after_id, .. }))) => {
                 // Modified file
-                if let (jj_lib::backend::TreeValue::File { id: before_id, .. },
-                        jj_lib::backend::TreeValue::File { id: after_id, .. }) = (before, after) {
-                    let mut before_reader = repo.store().read_file(&path, before_id).await?;
-                    let mut before_content = Vec::new();
-                    tokio::io::AsyncReadExt::read_to_end(&mut before_reader, &mut before_content).await?;
+                let (before_content, after_content) = tokio::try_join!(
+                    read_file_content(repo, &entry.path, before_id),
+                    read_file_content(repo, &entry.path, after_id)
+                )?;
 
-                    let mut after_reader = repo.store().read_file(&path, after_id).await?;
-                    let mut after_content = Vec::new();
-                    tokio::io::AsyncReadExt::read_to_end(&mut after_reader, &mut after_content).await?;
-
-                    if let (Ok(before_text), Ok(after_text)) =
-                        (String::from_utf8(before_content), String::from_utf8(after_content)) {
-                        // Use unified diff with limited context (2 lines)
-                        use similar::TextDiff;
+                match (String::from_utf8(before_content), String::from_utf8(after_content)) {
+                    (Ok(before_text), Ok(after_text)) => {
                         let diff = TextDiff::from_lines(&before_text, &after_text);
-
-                        writeln!(diff_output, "diff --git a/{0} b/{0}", path.as_internal_file_string())?;
+                        writeln!(diff_output, "diff --git a/{0} b/{0}", path_str)?;
                         write!(diff_output, "{}", diff.unified_diff()
-                            .context_radius(2)
-                            .header(&format!("a/{}", path.as_internal_file_string()),
-                                   &format!("b/{}", path.as_internal_file_string())))?;
-                    } else {
-                        writeln!(diff_output, "(binary file modified)")?;
+                            .context_radius(CONTEXT_LINES)
+                            .header(&format!("a/{}", path_str), &format!("b/{}", path_str)))?;
                     }
+                    _ => writeln!(diff_output, "diff --git a/{0} b/{0}\n(binary file modified)", path_str)?,
                 }
             }
             _ => {}
