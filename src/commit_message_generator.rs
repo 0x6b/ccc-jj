@@ -1,6 +1,7 @@
 use std::process::Command;
 use std::sync::LazyLock;
 
+use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -94,6 +95,16 @@ impl CommitMessageGenerator {
     }
 
     fn try_generate(&self, diff_content: &str) -> Option<String> {
+        let spinner = ProgressBar::new_spinner();
+        spinner.set_style(
+            ProgressStyle::default_spinner()
+                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+                .template("{spinner:.cyan} {msg}")
+                .ok()?,
+        );
+        spinner.set_message("Generating commit message with Claude...");
+        spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+
         let prompt = self
             .prompt_template
             .replace("{language}", &self.language)
@@ -105,12 +116,15 @@ impl CommitMessageGenerator {
         command.arg(self.agents_json);
         command.arg(&prompt);
 
-        command
+        let result = command
             .output()
             .ok()
             .filter(|output| output.status.success())
             .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-            .filter(|message| !message.is_empty())
+            .filter(|message| !message.is_empty());
+
+        spinner.finish_and_clear();
+        result
     }
 }
 
