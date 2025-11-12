@@ -103,7 +103,7 @@ impl CommitMessageGenerator {
                 .ok()?,
         );
         spinner.set_message("Generating commit message with Claude...");
-        spinner.enable_steady_tick(std::time::Duration::from_millis(120));
+        spinner.enable_steady_tick(std::time::Duration::from_millis(200));
 
         let prompt = self
             .prompt_template
