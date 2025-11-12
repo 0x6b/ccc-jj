@@ -3,6 +3,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 use serde::Deserialize;
+use serde_json::{Map, Value};
 use toml::from_str;
 
 #[derive(Deserialize)]
@@ -21,11 +22,26 @@ struct Generator {
     command: String,
     args: Vec<String>,
     default_commit_message: String,
+    agent: Agent,
+}
+
+#[derive(Deserialize)]
+struct Agent {
+    name: String,
+    description: String,
+    prompt: String,
+    tools: String,
 }
 
 static CONFIG: LazyLock<Config> = LazyLock::new(|| {
     from_str(include_str!("../assets/commit-config.toml"))
         .expect("Failed to parse embedded commit-config.toml")
+});
+
+static AGENTS_JSON: LazyLock<String> = LazyLock::new(|| {
+    let mut agents = Map::new();
+    agents.insert(CONFIG.generator.agent.name.clone(), CONFIG.generator.agent.to_json());
+    Value::Object(agents).to_string()
 });
 
 static CONVENTIONAL_COMMIT_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -38,6 +54,7 @@ pub struct CommitMessageGenerator {
     prompt_template: String,
     command: String,
     args: Vec<String>,
+    agents_json: &'static str,
 }
 
 impl CommitMessageGenerator {
@@ -47,6 +64,7 @@ impl CommitMessageGenerator {
             prompt_template: CONFIG.prompt.template.clone(),
             command: CONFIG.generator.command.clone(),
             args: CONFIG.generator.args.clone(),
+            agents_json: &AGENTS_JSON,
         }
     }
 
@@ -77,14 +95,28 @@ impl CommitMessageGenerator {
         eprintln!("{}", prompt);
         eprintln!("=== End of prompt ===\n");
 
-        Command::new(&self.command)
-            .args(&self.args)
-            .arg(&prompt)
+        let mut command = Command::new(&self.command);
+        command.args(&self.args);
+        command.arg("--agents");
+        command.arg(self.agents_json);
+        command.arg(&prompt);
+
+        command
             .output()
             .ok()
             .filter(|output| output.status.success())
             .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
             .filter(|message| !message.is_empty())
+    }
+}
+
+impl Agent {
+    fn to_json(&self) -> Value {
+        let mut fields = Map::new();
+        fields.insert("description".to_string(), Value::String(self.description.clone()));
+        fields.insert("prompt".to_string(), Value::String(self.prompt.clone()));
+        fields.insert("tools".to_string(), Value::String(self.tools.clone()));
+        Value::Object(fields)
     }
 }
 

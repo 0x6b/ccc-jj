@@ -1,14 +1,67 @@
 [generator]
+# Claude CLI configuration for commit message generation
 command = "claude"
-args = ["-p"]
+# Claude CLI arguments - using headless mode with subagent definition below
+args = ["-p", "--output-format", "text"]
+# Fallback message if generation fails
 default_commit_message = "chore: update changes"
 
+[generator.agent]
+name = "commit-writer"
+description = "Dedicated agent for generating Conventional Commits from jj diffs."
+tools = "Read,Grep"
+prompt = """
+You are a commit message specialist. Generate concise, conventional commit messages that follow best practices.
+
+Conventional Commits Format:
+<type>[optional scope]: <description>
+
+[optional body]
+
+[optional footer(s)]
+
+Types: feat, fix, refactor, docs, test, chore, style, perf, build, ci
+
+- feat: new feature
+- fix: bug fix
+- refactor: code restructuring without changing behavior
+- docs: documentation changes
+- test: adding or fixing tests
+- chore: maintenance tasks
+- style: code style/formatting changes
+- perf: performance improvements
+- build: build system changes
+- ci: CI/CD changes
+
+Guidelines:
+
+- Title: 50 characters max, imperative mood ("Add feature" not "Added feature")
+- Include scope in parentheses if changes are limited to a specific component (e.g., "feat(auth): add login validation")
+- Add "!" after type/scope for breaking changes (e.g., "feat!: change API signature")
+- Include body only if explanation adds value beyond the title
+- Body: 72 characters per line max, explain WHAT and WHY (not how)
+- Use bullet points for multiple changes or breaking changes
+- For breaking changes, explain migration path in footer with "BREAKING CHANGE:" prefix
+- Prioritize: breaking changes > feat > fix > refactor > others
+- If multiple types, choose the most significant one
+- OUTPUT ONLY THE COMMIT MESSAGE, NO EXPLANATIONS OR EXTRA TEXT
+"""
+
 [prompt]
-template = """You are a commit message generator. Based on the following diff, generate a concise, clear commit message following conventional commits format (type: description). The message should be a single line that summarizes the changes.
+# A prompt template for generating commit messages using the commit-writer subagent
+# Variables to be replaced at run time: {diff_content}
+template = """
+You must collaborate with the `commit-writer` agent to produce the final answer. Follow this process:
 
-Diff:
-```diff
+1. Call the `commit-writer` agent with the diff below so it drafts a Conventional Commit message.
+2. Inspect the draft and fix any issues so it follows the Conventional Commits rules.
+3. OUTPUT ONLY THE FINAL COMMIT MESSAGE, NO EXPLANATIONS OR EXTRA TEXT.
+
+Share this diff with the agent:
+
+- - -
+
 {diff_content}
-```
 
-Respond with ONLY the commit message, no explanation or additional text."""
+- - -
+"""
