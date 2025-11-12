@@ -112,8 +112,16 @@ async fn get_tree_diff(
                     tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut content).await?;
 
                     if let Ok(text) = String::from_utf8(content.clone()) {
-                        for line in text.lines() {
+                        let lines: Vec<&str> = text.lines().collect();
+                        let total_lines = lines.len();
+
+                        // Show first 50 lines for new files to keep context reasonable
+                        for line in lines.iter().take(50) {
                             writeln!(diff_output, "+{}", line)?;
+                        }
+
+                        if total_lines > 50 {
+                            writeln!(diff_output, "... ({} more lines)", total_lines - 50)?;
                         }
                     } else {
                         writeln!(diff_output, "(binary file)")?;
@@ -133,8 +141,16 @@ async fn get_tree_diff(
                     tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut content).await?;
 
                     if let Ok(text) = String::from_utf8(content) {
-                        for line in text.lines() {
+                        let lines: Vec<&str> = text.lines().collect();
+                        let total_lines = lines.len();
+
+                        // Show first 50 lines for deleted files to keep context reasonable
+                        for line in lines.iter().take(50) {
                             writeln!(diff_output, "-{}", line)?;
+                        }
+
+                        if total_lines > 50 {
+                            writeln!(diff_output, "... ({} more lines)", total_lines - 50)?;
                         }
                     } else {
                         writeln!(diff_output, "(binary file)")?;
@@ -159,18 +175,14 @@ async fn get_tree_diff(
 
                     if let (Ok(before_text), Ok(after_text)) =
                         (String::from_utf8(before_content), String::from_utf8(after_content)) {
-                        // Use a simple diff algorithm
-                        use similar::{ChangeTag, TextDiff};
+                        // Use unified diff with limited context (2 lines)
+                        use similar::TextDiff;
                         let diff = TextDiff::from_lines(&before_text, &after_text);
 
-                        for change in diff.iter_all_changes() {
-                            let sign = match change.tag() {
-                                ChangeTag::Delete => "-",
-                                ChangeTag::Insert => "+",
-                                ChangeTag::Equal => " ",
-                            };
-                            write!(diff_output, "{}{}", sign, change)?;
-                        }
+                        write!(diff_output, "{}", diff.unified_diff()
+                            .context_radius(2)
+                            .header(&format!("a/{}", path.as_internal_file_string()),
+                                   &format!("b/{}", path.as_internal_file_string())))?;
                     } else {
                         writeln!(diff_output, "(binary file modified)")?;
                     }
@@ -189,7 +201,9 @@ fn generate_commit_message(claude_path: &str, diff: &str) -> Result<String> {
         r#"You are a commit message generator. Based on the following diff, generate a concise, clear commit message following conventional commits format (type: description). The message should be a single line that summarizes the changes.
 
 Diff:
+```diff
 {}
+```
 
 Respond with ONLY the commit message, no explanation or additional text."#,
         diff
