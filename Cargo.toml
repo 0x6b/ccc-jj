@@ -3,6 +3,10 @@ name = "ccc-jj"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "cccjj"
+path = "src/main.rs"
+
 [dependencies]
 jj-lib = { git = "https://github.com/martinvonz/jj.git" }
 tokio = { version = "1", features = ["full"] }
