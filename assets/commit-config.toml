@@ -13,7 +13,7 @@ template = """
 Generate a Conventional Commit message in {language} for the following diff.
 
 Conventional Commits Format:
-<type>[optional scope]: <description>
+<type>: <description>
 
 [optional body]
 
@@ -23,7 +23,7 @@ Types: feat, fix, refactor, docs, test, chore, style, perf, build, ci
 
 Guidelines:
 - Title: 50 characters max, imperative mood ("Add feature" not "Added feature")
-    - Include scope in parentheses if changes are limited to a specific component
+    - Do NOT include scope or component in parentheses
     - Prioritize: feat > fix > refactor > others
     - If multiple types, choose the most significant one
 - Body: 72 characters per line max, explain WHAT and WHY (not how)

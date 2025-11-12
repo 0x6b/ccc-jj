@@ -74,13 +74,26 @@ fn find_workspace(start_dir: &Path) -> Result<Workspace> {
     let store_factories = StoreFactories::default();
     let working_copy_factories = default_working_copy_factories();
 
-    Workspace::load(
-        &settings,
-        start_dir,
-        &store_factories,
-        &working_copy_factories,
-    )
-    .context("Failed to load workspace")
+    // Traverse up the directory tree to find the workspace root
+    let mut current_dir = start_dir;
+    loop {
+        if current_dir.join(".jj").exists() {
+            return Workspace::load(
+                &settings,
+                current_dir,
+                &store_factories,
+                &working_copy_factories,
+            )
+            .context("Failed to load workspace");
+        }
+
+        match current_dir.parent() {
+            Some(parent) => current_dir = parent,
+            None => break,
+        }
+    }
+
+    anyhow::bail!("No Jujutsu workspace found in '{}' or any parent directory", start_dir.display())
 }
 
 /// Create a commit with the generated message
