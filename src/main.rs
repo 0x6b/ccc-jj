@@ -159,10 +159,6 @@ async fn get_tree_diff(
             }
             (Some(Some(before)), Some(Some(after))) => {
                 // Modified file
-                writeln!(diff_output, "diff --git a/{0} b/{0}", path.as_internal_file_string())?;
-                writeln!(diff_output, "--- a/{}", path.as_internal_file_string())?;
-                writeln!(diff_output, "+++ b/{}", path.as_internal_file_string())?;
-
                 if let (jj_lib::backend::TreeValue::File { id: before_id, .. },
                         jj_lib::backend::TreeValue::File { id: after_id, .. }) = (before, after) {
                     let mut before_reader = repo.store().read_file(&path, before_id).await?;
@@ -179,6 +175,7 @@ async fn get_tree_diff(
                         use similar::TextDiff;
                         let diff = TextDiff::from_lines(&before_text, &after_text);
 
+                        writeln!(diff_output, "diff --git a/{0} b/{0}", path.as_internal_file_string())?;
                         write!(diff_output, "{}", diff.unified_diff()
                             .context_radius(2)
                             .header(&format!("a/{}", path.as_internal_file_string()),
