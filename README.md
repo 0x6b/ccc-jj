@@ -69,9 +69,12 @@ ccc-jj --path /path/to/workspace --claude-path /usr/local/bin/claude
 ## How It Works
 
 1. **Workspace Discovery**: Searches for a jj workspace starting from the specified directory
-2. **Diff Extraction**: Runs `jj diff` to get the current changes
-3. **Message Generation**: Calls Claude CLI with the diff to generate a conventional commit message
-4. **Commit Creation**: Creates a new commit in jj with the generated message
+2. **Change Detection**: Snapshots the working copy and compares its tree with the parent commit's tree to detect actual changes
+3. **Diff Extraction**: Runs `jj diff` to get the current changes for message generation
+4. **Message Generation**: Calls Claude CLI with the diff to generate a conventional commit message
+5. **Commit Creation**: Creates a new commit in jj with the generated message
+
+The tool intelligently prevents duplicate commits by comparing tree IDs - if the working copy tree matches the parent commit's tree, no commit is created. This handles jj's behavior of automatically creating new working-copy commits after each commit.
 
 ## Example Workflow
 
@@ -86,12 +89,20 @@ ccc-jj
 Output:
 ```
 Found workspace at: /Users/yourname/project
+Checking for changes...
 Getting diff...
 Generating commit message using Claude...
 Generated message: feat: add new feature to main module
 Creating commit...
 Committed change abc123def456 with message:
 feat: add new feature to main module
+```
+
+If you run the tool again without making changes:
+```
+Found workspace at: /Users/yourname/project
+Checking for changes...
+No changes to commit (working copy tree matches parent)
 ```
 
 ## Configuration
@@ -126,6 +137,8 @@ This project depends on:
 - `tokio`: Async runtime
 - `anyhow`: Error handling
 - `clap`: Command-line argument parsing
+- `whoami`: System username and hostname detection
+- `dirs`: Standard directory path resolution
 
 ## Development
 
