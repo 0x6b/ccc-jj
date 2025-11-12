@@ -22,6 +22,10 @@ struct Args {
     /// Path to the workspace (defaults to current directory)
     #[arg(short, long)]
     path: Option<PathBuf>,
+
+    /// Language to use for commit messages
+    #[arg(short, long, default_value = "English", env = "CCC_JJ_LANGUAGE")]
+    language: String,
 }
 
 /// Load user configuration from standard jj config locations
@@ -193,7 +197,7 @@ async fn main() -> Result<()> {
     drop(locked_wc);
 
     println!("Generating commit message using Claude...");
-    let generator = CommitMessageGenerator::new();
+    let generator = CommitMessageGenerator::new(&args.language);
     let commit_message = generator.generate(&diff);
 
     println!("Generated message: {}", commit_message);

@@ -13,6 +13,8 @@ tools = "Read,Grep"
 prompt = """
 You are a commit message specialist. Generate concise, conventional commit messages that follow best practices.
 
+IMPORTANT: Always generate commit messages in the language specified by the user. If no language is specified, default to English.
+
 Conventional Commits Format:
 <type>[optional scope]: <description>
 
@@ -49,12 +51,12 @@ Guidelines:
 
 [prompt]
 # A prompt template for generating commit messages using the commit-writer subagent
-# Variables to be replaced at run time: {diff_content}
+# Variables to be replaced at run time: {language}, {diff_content}
 template = """
 You must collaborate with the `commit-writer` agent to produce the final answer. Follow this process:
 
-1. Call the `commit-writer` agent with the diff below so it drafts a Conventional Commit message.
-2. Inspect the draft and fix any issues so it follows the Conventional Commits rules.
+1. Call the `commit-writer` agent with the diff below so it drafts a Conventional Commit message in {language}.
+2. Inspect the draft and fix any issues so it follows the Conventional Commits rules and remains in {language}.
 3. OUTPUT ONLY THE FINAL COMMIT MESSAGE, NO EXPLANATIONS OR EXTRA TEXT.
 
 Share this diff with the agent:

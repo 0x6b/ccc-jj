@@ -55,16 +55,21 @@ pub struct CommitMessageGenerator {
     command: String,
     args: Vec<String>,
     agents_json: &'static str,
+    language: String,
 }
 
 impl CommitMessageGenerator {
     /// Creates a new commit message generator
-    pub fn new() -> Self {
+    ///
+    /// # Arguments
+    /// - `language` - The language to use for generating commit messages
+    pub fn new(language: &str) -> Self {
         Self {
             prompt_template: CONFIG.prompt.template.clone(),
             command: CONFIG.generator.command.clone(),
             args: CONFIG.generator.args.clone(),
             agents_json: &AGENTS_JSON,
+            language: language.to_string(),
         }
     }
 
@@ -89,7 +94,10 @@ impl CommitMessageGenerator {
     }
 
     fn try_generate(&self, diff_content: &str) -> Option<String> {
-        let prompt = self.prompt_template.replace("{diff_content}", diff_content);
+        let prompt = self
+            .prompt_template
+            .replace("{language}", &self.language)
+            .replace("{diff_content}", diff_content);
 
         eprintln!("=== Full prompt being sent to Claude ===");
         eprintln!("{}", prompt);
@@ -122,6 +130,6 @@ impl Agent {
 
 impl Default for CommitMessageGenerator {
     fn default() -> Self {
-        Self::new()
+        Self::new("English")
     }
 }
