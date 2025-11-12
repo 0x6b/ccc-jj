@@ -70,16 +70,13 @@ fn find_workspace(start_dir: &Path) -> Result<Workspace> {
     let store_factories = StoreFactories::default();
     let working_copy_factories = default_working_copy_factories();
 
-    let workspace = Workspace::load(
+    Workspace::load(
         &settings,
         start_dir,
         &store_factories,
         &working_copy_factories,
     )
-    .context("Failed to load workspace")?;
-
-    println!("Found workspace at: {}", workspace.workspace_root().display());
-    Ok(workspace)
+    .context("Failed to load workspace")
 }
 
 /// Create a commit with the generated message
@@ -143,7 +140,6 @@ async fn main() -> Result<()> {
     let workspace = find_workspace(&workspace_path)?;
 
     // Check if working copy commit needs a description
-    println!("Checking for changes...");
     let repo = workspace.repo_loader().load_at_head()?;
     let wc_commit_id = repo
         .view()
@@ -171,24 +167,20 @@ async fn main() -> Result<()> {
 
     // If working copy tree matches parent tree, there's nothing to commit
     if current_tree.tree_ids() == parent_tree.tree_ids() {
-        println!("No changes to commit (working copy matches parent)");
         drop(locked_wc);
         return Ok(());
     }
 
     // If working copy commit already has a description, don't overwrite it
     if !wc_commit.description().is_empty() {
-        println!("Working copy commit already has a description, skipping");
         drop(locked_wc);
         return Ok(());
     }
 
     // Generate diff for commit message (using jj-lib API, not external command)
-    println!("Getting diff...");
     let diff = get_tree_diff(&repo, &parent_tree, &current_tree).await?;
 
     if diff.trim().is_empty() {
-        println!("No changes to commit");
         drop(locked_wc);
         return Ok(());
     }
@@ -196,14 +188,9 @@ async fn main() -> Result<()> {
     // Drop the lock before calling Claude (external process)
     drop(locked_wc);
 
-    println!("Generating commit message using Claude...");
+    // Generate commit message and create commit
     let generator = CommitMessageGenerator::new(&args.language);
     let commit_message = generator.generate(&diff);
-
-    println!("Generated message: {}", commit_message);
-
-    // Create commit with the snapshotted tree
-    println!("Creating commit...");
     create_commit(&workspace, &commit_message, current_tree).await?;
 
     Ok(())

@@ -99,10 +99,6 @@ impl CommitMessageGenerator {
             .replace("{language}", &self.language)
             .replace("{diff_content}", diff_content);
 
-        eprintln!("=== Full prompt being sent to Claude ===");
-        eprintln!("{}", prompt);
-        eprintln!("=== End of prompt ===\n");
-
         let mut command = Command::new(&self.command);
         command.args(&self.args);
         command.arg("--agents");
