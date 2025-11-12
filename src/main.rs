@@ -1,10 +1,11 @@
+mod commit_message_generator;
+mod diff;
+
 use std::env;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use futures::StreamExt;
 use jj_lib::config::{ConfigLayer, ConfigSource, StackedConfig};
 use jj_lib::object_id::ObjectId;
 use jj_lib::repo::{Repo, StoreFactories};
@@ -12,16 +13,15 @@ use jj_lib::settings::UserSettings;
 use jj_lib::workspace::{default_working_copy_factories, Workspace};
 use jj_lib::working_copy::SnapshotOptions;
 
+use commit_message_generator::CommitMessageGenerator;
+use diff::get_tree_diff;
+
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Auto-commit changes in a jj workspace using Claude for commit messages", long_about = None)]
 struct Args {
     /// Path to the workspace (defaults to current directory)
     #[arg(short, long)]
     path: Option<PathBuf>,
-
-    /// Path to the claude CLI executable
-    #[arg(short, long, default_value = "claude")]
-    claude_path: String,
 }
 
 /// Load user configuration from standard jj config locations
@@ -76,159 +76,6 @@ fn find_workspace(start_dir: &Path) -> Result<Workspace> {
 
     println!("Found workspace at: {}", workspace.workspace_root().display());
     Ok(workspace)
-}
-
-/// Read file content from store
-async fn read_file_content(
-    repo: &jj_lib::repo::ReadonlyRepo,
-    path: &jj_lib::repo_path::RepoPath,
-    id: &jj_lib::backend::FileId,
-) -> Result<Vec<u8>> {
-    use tokio::io::AsyncReadExt;
-    let mut content = Vec::new();
-    repo.store().read_file(path, id).await?.read_to_end(&mut content).await?;
-    Ok(content)
-}
-
-/// Format file diff (added/removed) with line truncation
-async fn format_added_removed_diff(
-    repo: &jj_lib::repo::ReadonlyRepo,
-    path: &jj_lib::repo_path::RepoPath,
-    path_str: &str,
-    id: &jj_lib::backend::FileId,
-    is_added: bool,
-    max_lines: usize,
-) -> Result<String> {
-    use std::fmt::Write;
-
-    let (status, from, to) = if is_added {
-        ("new file", "/dev/null".to_string(), format!("b/{}", path_str))
-    } else {
-        ("deleted file", format!("a/{}", path_str), "/dev/null".to_string())
-    };
-
-    let mut output = format!("diff --git a/{0} b/{0}\n{status}\n--- {from}\n+++ {to}\n", path_str);
-    let content = read_file_content(repo, path, id).await?;
-
-    match String::from_utf8(content) {
-        Ok(text) => {
-            let lines: Vec<_> = text.lines().collect();
-            let prefix = if is_added { '+' } else { '-' };
-
-            lines.iter().take(max_lines).for_each(|line| {
-                let _ = writeln!(output, "{}{}", prefix, line);
-            });
-
-            if lines.len() > max_lines {
-                let _ = writeln!(output, "... ({} more lines)", lines.len() - max_lines);
-            }
-        }
-        Err(_) => writeln!(output, "(binary file)")?,
-    }
-
-    Ok(output)
-}
-
-/// Get the diff between two trees using jj-lib
-async fn get_tree_diff(
-    repo: &jj_lib::repo::ReadonlyRepo,
-    from_tree: &jj_lib::merged_tree::MergedTree,
-    to_tree: &jj_lib::merged_tree::MergedTree,
-) -> Result<String> {
-    use jj_lib::backend::TreeValue;
-    use similar::TextDiff;
-
-    const MAX_LINES: usize = 50;
-    const CONTEXT_LINES: usize = 2;
-
-    let mut output = String::new();
-    let mut stream = from_tree.diff_stream(to_tree, &jj_lib::matchers::EverythingMatcher);
-
-    while let Some(entry) = stream.next().await {
-        let path_str = entry.path.as_internal_file_string();
-        let values = entry.values?;
-
-        output.push_str(&match (values.before.as_resolved(), values.after.as_resolved()) {
-            (None, Some(Some(TreeValue::File { id, .. }))) =>
-                format_added_removed_diff(repo, &entry.path, &path_str, id, true, MAX_LINES).await?,
-
-            (Some(Some(TreeValue::File { id, .. })), None) =>
-                format_added_removed_diff(repo, &entry.path, &path_str, id, false, MAX_LINES).await?,
-
-            (Some(Some(TreeValue::File { id: before_id, .. })),
-             Some(Some(TreeValue::File { id: after_id, .. }))) => {
-                let (before_content, after_content) = tokio::try_join!(
-                    read_file_content(repo, &entry.path, before_id),
-                    read_file_content(repo, &entry.path, after_id)
-                )?;
-
-                match (String::from_utf8(before_content), String::from_utf8(after_content)) {
-                    (Ok(before_text), Ok(after_text)) => {
-                        let diff = TextDiff::from_lines(&before_text, &after_text);
-                        format!("diff --git a/{0} b/{0}\n{1}", path_str,
-                            diff.unified_diff()
-                                .context_radius(CONTEXT_LINES)
-                                .header(&format!("a/{}", path_str), &format!("b/{}", path_str)))
-                    }
-                    _ => format!("diff --git a/{0} b/{0}\n(binary file modified)\n", path_str),
-                }
-            }
-            _ => String::new(),
-        });
-    }
-
-    Ok(output)
-}
-
-/// Commit message generator using Claude CLI
-struct CommitMessageGenerator {
-    claude_path: String,
-    prompt_template: &'static str,
-}
-
-impl CommitMessageGenerator {
-    const PROMPT_TEMPLATE: &'static str = r#"You are a commit message generator. Based on the following diff, generate a concise, clear commit message following conventional commits format (type: description). The message should be a single line that summarizes the changes.
-
-Diff:
-```diff
-{diff}
-```
-
-Respond with ONLY the commit message, no explanation or additional text."#;
-
-    fn new(claude_path: String) -> Self {
-        Self {
-            claude_path,
-            prompt_template: Self::PROMPT_TEMPLATE,
-        }
-    }
-
-    fn generate(&self, diff: &str) -> Result<String> {
-        let prompt = self.prompt_template.replace("{diff}", diff);
-
-        eprintln!("=== Full prompt being sent to Claude ===");
-        eprintln!("{}", prompt);
-        eprintln!("=== End of prompt ===\n");
-
-        let output = Command::new(&self.claude_path)
-            .args(["-p", &prompt])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .context("Failed to execute claude CLI")?;
-
-        if !output.status.success() {
-            anyhow::bail!(
-                "claude CLI failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        String::from_utf8(output.stdout)
-            .map(|s| s.trim().to_string())
-            .context("Failed to parse claude output")
-    }
 }
 
 /// Create a commit with the generated message
@@ -346,8 +193,8 @@ async fn main() -> Result<()> {
     drop(locked_wc);
 
     println!("Generating commit message using Claude...");
-    let generator = CommitMessageGenerator::new(args.claude_path.clone());
-    let commit_message = generator.generate(&diff)?;
+    let generator = CommitMessageGenerator::new();
+    let commit_message = generator.generate(&diff);
 
     println!("Generated message: {}", commit_message);
 

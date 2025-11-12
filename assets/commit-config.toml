@@ -1,0 +1,14 @@
+[generator]
+command = "claude"
+args = ["-p"]
+default_commit_message = "chore: update changes"
+
+[prompt]
+template = """You are a commit message generator. Based on the following diff, generate a concise, clear commit message following conventional commits format (type: description). The message should be a single line that summarizes the changes.
+
+Diff:
+```diff
+{diff_content}
+```
+
+Respond with ONLY the commit message, no explanation or additional text."""
