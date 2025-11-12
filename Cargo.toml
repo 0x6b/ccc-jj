@@ -8,5 +8,5 @@ jj-lib = { git = "https://github.com/martinvonz/jj.git" }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
-whoami = "1.5"
 dirs = "5.0"
+futures = "0.3"

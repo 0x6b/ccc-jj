@@ -1,15 +1,14 @@
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use futures::StreamExt;
 use jj_lib::config::{ConfigLayer, ConfigSource, StackedConfig};
 use jj_lib::object_id::ObjectId;
 use jj_lib::repo::{Repo, StoreFactories};
 use jj_lib::settings::UserSettings;
-use jj_lib::transaction::Transaction;
 use jj_lib::workspace::{default_working_copy_factories, Workspace};
 use jj_lib::working_copy::SnapshotOptions;
 
@@ -23,25 +22,6 @@ struct Args {
     /// Path to the claude CLI executable
     #[arg(short, long, default_value = "claude")]
     claude_path: String,
-}
-
-/// Create a base configuration layer with operation hostname and username
-fn env_base_layer() -> ConfigLayer {
-    let mut layer = ConfigLayer::empty(ConfigSource::EnvBase);
-
-    // Set operation.hostname
-    if let Ok(hostname) = whoami::fallible::hostname() {
-        layer.set_value("operation.hostname", hostname).unwrap();
-    }
-
-    // Set operation.username
-    if let Ok(username) = whoami::fallible::username() {
-        layer.set_value("operation.username", username).unwrap();
-    } else if let Ok(username) = env::var("USER") {
-        layer.set_value("operation.username", username).unwrap();
-    }
-
-    layer
 }
 
 /// Load user configuration from standard jj config locations
@@ -76,9 +56,8 @@ fn load_user_config(config: &mut StackedConfig) -> Result<()> {
 
 /// Discover the jj workspace starting from the given directory
 fn find_workspace(start_dir: &Path) -> Result<Workspace> {
-    // Build config with proper layers
+    // Build config with proper layers (with_defaults includes operation.hostname/username)
     let mut config = StackedConfig::with_defaults();
-    config.add_layer(env_base_layer());
 
     // Load user configuration
     load_user_config(&mut config)?;
@@ -99,22 +78,35 @@ fn find_workspace(start_dir: &Path) -> Result<Workspace> {
     Ok(workspace)
 }
 
-/// Get the diff of current working copy changes using jj diff
-fn get_diff(workspace_root: &Path) -> Result<String> {
-    let output = Command::new("jj")
-        .current_dir(workspace_root)
-        .args(["diff"])
-        .output()
-        .context("Failed to execute jj diff")?;
+/// Get the diff between two trees using jj-lib
+async fn get_tree_diff(
+    from_tree: &jj_lib::merged_tree::MergedTree,
+    to_tree: &jj_lib::merged_tree::MergedTree,
+) -> Result<String> {
+    use std::fmt::Write;
 
-    if !output.status.success() {
-        anyhow::bail!(
-            "jj diff failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+    let mut diff_output = String::new();
+    let mut diff = from_tree.diff_stream(to_tree, &jj_lib::matchers::EverythingMatcher);
+
+    while let Some(entry) = diff.next().await {
+        let path = entry.path;
+        let diff_value = entry.values?;
+
+        if diff_value.before.removes().next().is_some() {
+            if diff_value.after.adds().next().is_some() {
+                // Modified file
+                writeln!(diff_output, "Modified {}", path.as_internal_file_string())?;
+            } else {
+                // Removed file
+                writeln!(diff_output, "Removed {}", path.as_internal_file_string())?;
+            }
+        } else if diff_value.after.adds().next().is_some() {
+            // Added file
+            writeln!(diff_output, "Added {}", path.as_internal_file_string())?;
+        }
     }
 
-    Ok(String::from_utf8(output.stdout)?)
+    Ok(diff_output)
 }
 
 /// Generate commit message using Claude CLI
@@ -152,30 +144,14 @@ fn generate_commit_message(claude_path: &str, diff: &str) -> Result<String> {
     Ok(message)
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let args = Args::parse();
-
-    // Determine workspace path
-    let workspace_path = match args.path {
-        Some(p) => p,
-        None => env::current_dir().context("Failed to get current directory")?,
-    };
-
-    // Find workspace
-    let workspace = find_workspace(&workspace_path)?;
-    let workspace_root = workspace.workspace_root().to_path_buf();
-
-    // Check if there are actual tree changes before doing anything expensive
-    println!("Checking for changes...");
+/// Create a commit with the generated message
+async fn create_commit(
+    workspace: &Workspace,
+    commit_message: &str,
+) -> Result<()> {
     let repo = workspace.repo_loader().load_at_head()?;
-    let wc_commit_id = repo
-        .view()
-        .get_wc_commit_id(workspace.workspace_name())
-        .context("workspace should have a working-copy commit")?;
-    let wc_commit = repo.store().get_commit(wc_commit_id)?;
 
-    // Snapshot to get the current tree
+    // Snapshot the working copy
     let mut locked_wc = workspace.working_copy().start_mutation()?;
     let snapshot_options = SnapshotOptions {
         base_ignores: jj_lib::gitignore::GitIgnoreFile::empty(),
@@ -183,53 +159,9 @@ async fn main() -> Result<()> {
         start_tracking_matcher: &jj_lib::matchers::EverythingMatcher,
         max_new_file_size: 1024 * 1024 * 100,
     };
-    let (current_tree, _stats) = locked_wc.snapshot(&snapshot_options).await?;
+    let (tree, _stats) = locked_wc.snapshot(&snapshot_options).await?;
 
-    // Compare with parent tree
-    let has_changes = if !wc_commit.parent_ids().is_empty() {
-        let parent_commit = repo.store().get_commit(&wc_commit.parent_ids()[0])?;
-        let parent_tree = parent_commit.tree();
-        current_tree.tree_ids() != parent_tree.tree_ids()
-    } else {
-        true // No parent means this is the first commit
-    };
-
-    if !has_changes {
-        println!("No changes to commit (working copy tree matches parent)");
-        drop(locked_wc);
-        return Ok(());
-    }
-
-    // Get diff for commit message generation
-    println!("Getting diff...");
-    let diff = get_diff(&workspace_root)?;
-
-    if diff.trim().is_empty() {
-        println!("No changes to commit");
-        drop(locked_wc);
-        return Ok(());
-    }
-
-    println!("Generating commit message using Claude...");
-    let commit_message = generate_commit_message(&args.claude_path, &diff)?;
-
-    println!("Generated message: {}", commit_message);
-
-    // Create commit using the already-snapshotted tree
-    println!("Creating commit...");
-    create_commit_with_tree(&workspace, &commit_message, current_tree, locked_wc).await?;
-
-    Ok(())
-}
-
-/// Create a commit with the generated message using an already-snapshotted tree
-async fn create_commit_with_tree(
-    workspace: &Workspace,
-    commit_message: &str,
-    tree: jj_lib::merged_tree::MergedTree,
-    mut locked_wc: Box<dyn jj_lib::working_copy::LockedWorkingCopy>,
-) -> Result<()> {
-    let repo = workspace.repo_loader().load_at_head()?;
+    // Start transaction
     let mut tx = repo.start_transaction();
     let mut_repo = tx.repo_mut();
 
@@ -239,6 +171,7 @@ async fn create_commit_with_tree(
         .context("workspace should have a working-copy commit")?;
     let wc_commit = repo.store().get_commit(wc_commit_id)?;
 
+    // Create new commit
     let new_commit = mut_repo
         .new_commit(wc_commit.parent_ids().to_vec(), tree)
         .set_description(commit_message)
@@ -251,6 +184,81 @@ async fn create_commit_with_tree(
 
     println!("Committed change {} with message:", new_commit.id().hex());
     println!("{}", commit_message);
+
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args = Args::parse();
+
+    // Determine workspace path
+    let workspace_path = match args.path {
+        Some(p) => p,
+        None => env::current_dir().context("Failed to get current directory")?,
+    };
+
+    // Find workspace
+    let workspace = find_workspace(&workspace_path)?;
+
+    // Check if there are actual tree changes before doing anything expensive
+    println!("Checking for changes...");
+    let repo = workspace.repo_loader().load_at_head()?;
+    let wc_commit_id = repo
+        .view()
+        .get_wc_commit_id(workspace.workspace_name())
+        .context("workspace should have a working-copy commit")?;
+    let wc_commit = repo.store().get_commit(wc_commit_id)?;
+
+    // Get the current working copy commit's tree (before snapshot)
+    let wc_tree = wc_commit.tree();
+
+    // Snapshot to get the actual filesystem state
+    let mut locked_wc = workspace.working_copy().start_mutation()?;
+    let snapshot_options = SnapshotOptions {
+        base_ignores: jj_lib::gitignore::GitIgnoreFile::empty(),
+        progress: None,
+        start_tracking_matcher: &jj_lib::matchers::EverythingMatcher,
+        max_new_file_size: 1024 * 1024 * 100,
+    };
+    let (current_tree, _stats) = locked_wc.snapshot(&snapshot_options).await?;
+
+    // Compare working copy commit's tree with actual filesystem state
+    if current_tree.tree_ids() == wc_tree.tree_ids() {
+        println!("No changes to commit (working copy matches filesystem)");
+        drop(locked_wc);
+        return Ok(());
+    }
+
+    // For generating the diff, use the parent tree as the base
+    let parent_tree = if !wc_commit.parent_ids().is_empty() {
+        let parent_commit = repo.store().get_commit(&wc_commit.parent_ids()[0])?;
+        parent_commit.tree()
+    } else {
+        jj_lib::merged_tree::MergedTree::resolved(repo.store().clone(), repo.store().empty_tree_id().clone())
+    };
+
+    // Generate diff for commit message (using jj-lib API, not external command)
+    println!("Getting diff...");
+    let diff = get_tree_diff(&parent_tree, &current_tree).await?;
+
+    if diff.trim().is_empty() {
+        println!("No changes to commit");
+        drop(locked_wc);
+        return Ok(());
+    }
+
+    // Drop the lock before calling Claude (external process)
+    drop(locked_wc);
+
+    println!("Generating commit message using Claude...");
+    let commit_message = generate_commit_message(&args.claude_path, &diff)?;
+
+    println!("Generated message: {}", commit_message);
+
+    // Create commit (will snapshot again)
+    println!("Creating commit...");
+    create_commit(&workspace, &commit_message).await?;
 
     Ok(())
 }
