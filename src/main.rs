@@ -121,6 +121,10 @@ Respond with ONLY the commit message, no explanation or additional text."#,
         diff
     );
 
+    eprintln!("=== Full prompt being sent to Claude ===");
+    eprintln!("{}", prompt);
+    eprintln!("=== End of prompt ===\n");
+
     let child = Command::new(claude_path)
         .args(["-p", &prompt])
         .stdin(Stdio::null())
