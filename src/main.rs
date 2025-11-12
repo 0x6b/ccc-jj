@@ -26,6 +26,10 @@ struct Args {
     /// Language to use for commit messages
     #[arg(short, long, default_value = "English", env = "CCC_JJ_LANGUAGE")]
     language: String,
+
+    /// Model to use for generating a commit message
+    #[arg(short, long, default_value = "haiku", env = "CCC_JJ_MODEL")]
+    model: String,
 }
 
 /// Load user configuration from standard jj config locations
@@ -189,7 +193,7 @@ async fn main() -> Result<()> {
     drop(locked_wc);
 
     // Generate commit message and create commit
-    let generator = CommitMessageGenerator::new(&args.language);
+    let generator = CommitMessageGenerator::new(&args.language, &args.model);
     let commit_message = generator.generate(&diff);
     create_commit(&workspace, &commit_message, current_tree).await?;
 

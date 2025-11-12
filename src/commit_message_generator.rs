@@ -57,6 +57,7 @@ pub struct CommitMessageGenerator {
     args: Vec<String>,
     agents_json: &'static str,
     language: String,
+    model: String,
 }
 
 impl CommitMessageGenerator {
@@ -64,13 +65,15 @@ impl CommitMessageGenerator {
     ///
     /// # Arguments
     /// - `language` - The language to use for generating commit messages
-    pub fn new(language: &str) -> Self {
+    /// - `model` - The Claude model to use for generation
+    pub fn new(language: &str, model: &str) -> Self {
         Self {
             prompt_template: CONFIG.prompt.template.clone(),
             command: CONFIG.generator.command.clone(),
             args: CONFIG.generator.args.clone(),
             agents_json: &AGENTS_JSON,
             language: language.to_string(),
+            model: model.to_string(),
         }
     }
 
@@ -112,6 +115,8 @@ impl CommitMessageGenerator {
 
         let mut command = Command::new(&self.command);
         command.args(&self.args);
+        command.arg("--model");
+        command.arg(&self.model);
         command.arg("--agents");
         command.arg(self.agents_json);
         command.arg(&prompt);
@@ -140,6 +145,6 @@ impl Agent {
 
 impl Default for CommitMessageGenerator {
     fn default() -> Self {
-        Self::new("English")
+        Self::new("English", "haiku")
     }
 }
