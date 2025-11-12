@@ -180,46 +180,55 @@ async fn get_tree_diff(
     Ok(output)
 }
 
-/// Generate commit message using Claude CLI
-fn generate_commit_message(claude_path: &str, diff: &str) -> Result<String> {
-    let prompt = format!(
-        r#"You are a commit message generator. Based on the following diff, generate a concise, clear commit message following conventional commits format (type: description). The message should be a single line that summarizes the changes.
+/// Commit message generator using Claude CLI
+struct CommitMessageGenerator {
+    claude_path: String,
+    prompt_template: &'static str,
+}
+
+impl CommitMessageGenerator {
+    const PROMPT_TEMPLATE: &'static str = r#"You are a commit message generator. Based on the following diff, generate a concise, clear commit message following conventional commits format (type: description). The message should be a single line that summarizes the changes.
 
 Diff:
 ```diff
-{}
+{diff}
 ```
 
-Respond with ONLY the commit message, no explanation or additional text."#,
-        diff
-    );
+Respond with ONLY the commit message, no explanation or additional text."#;
 
-    eprintln!("=== Full prompt being sent to Claude ===");
-    eprintln!("{}", prompt);
-    eprintln!("=== End of prompt ===\n");
-
-    let child = Command::new(claude_path)
-        .args(["-p", &prompt])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("Failed to spawn claude process")?;
-
-    let output = child.wait_with_output()?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "claude CLI failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+    fn new(claude_path: String) -> Self {
+        Self {
+            claude_path,
+            prompt_template: Self::PROMPT_TEMPLATE,
+        }
     }
 
-    let message = String::from_utf8(output.stdout)?
-        .trim()
-        .to_string();
+    fn generate(&self, diff: &str) -> Result<String> {
+        let prompt = self.prompt_template.replace("{diff}", diff);
 
-    Ok(message)
+        eprintln!("=== Full prompt being sent to Claude ===");
+        eprintln!("{}", prompt);
+        eprintln!("=== End of prompt ===\n");
+
+        let output = Command::new(&self.claude_path)
+            .args(["-p", &prompt])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .context("Failed to execute claude CLI")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "claude CLI failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        String::from_utf8(output.stdout)
+            .map(|s| s.trim().to_string())
+            .context("Failed to parse claude output")
+    }
 }
 
 /// Create a commit with the generated message
@@ -337,7 +346,8 @@ async fn main() -> Result<()> {
     drop(locked_wc);
 
     println!("Generating commit message using Claude...");
-    let commit_message = generate_commit_message(&args.claude_path, &diff)?;
+    let generator = CommitMessageGenerator::new(args.claude_path.clone());
+    let commit_message = generator.generate(&diff)?;
 
     println!("Generated message: {}", commit_message);
 
