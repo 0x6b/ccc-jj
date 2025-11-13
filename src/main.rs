@@ -161,7 +161,9 @@ async fn create_commit(
     let locked_wc = workspace.working_copy().start_mutation()?;
     locked_wc.finish(new_repo.operation().id().clone()).await?;
 
+    let author = commit_with_description.author();
     println!("Committed change {} with message:", commit_with_description.id().hex());
+    println!("Author: {} <{}>", author.name, author.email);
     println!("{}", commit_message);
 
     Ok(())
