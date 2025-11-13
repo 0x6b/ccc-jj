@@ -3,10 +3,13 @@ mod diff;
 
 use std::env;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use jj_lib::config::{ConfigLayer, ConfigResolutionContext, ConfigSource, StackedConfig};
+use jj_lib::gitignore::GitIgnoreFile;
 use jj_lib::object_id::ObjectId;
 use jj_lib::repo::{Repo, StoreFactories};
 use jj_lib::settings::UserSettings;
@@ -60,6 +63,77 @@ fn load_user_config(config: &mut StackedConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Load gitignore files from global and workspace locations
+fn load_base_ignores(workspace_root: &Path) -> Result<Arc<GitIgnoreFile>> {
+    let mut git_ignores = GitIgnoreFile::empty();
+
+    // Try to get global excludes file from git config
+    let global_excludes = get_global_git_excludes_file();
+
+    if let Some(excludes_path) = global_excludes {
+        // Chain the global excludes file (ignore errors if file doesn't exist)
+        git_ignores = git_ignores
+            .chain_with_file("", excludes_path)
+            .unwrap_or(git_ignores);
+    }
+
+    // Load workspace root .gitignore
+    let workspace_gitignore = workspace_root.join(".gitignore");
+    git_ignores = git_ignores
+        .chain_with_file("", workspace_gitignore)
+        .unwrap_or(git_ignores);
+
+    Ok(git_ignores)
+}
+
+/// Get the global git excludes file path
+fn get_global_git_excludes_file() -> Option<PathBuf> {
+    // First, try to get from git config
+    if let Ok(output) = Command::new("git")
+        .args(["config", "--global", "--get", "core.excludesFile"])
+        .output()
+    {
+        if output.status.success() {
+            if let Ok(path_str) = std::str::from_utf8(&output.stdout) {
+                let path_str = path_str.trim();
+                if !path_str.is_empty() {
+                    // Expand ~ to home directory if present
+                    let expanded = if path_str.starts_with("~/") {
+                        if let Some(home) = dirs::home_dir() {
+                            home.join(&path_str[2..])
+                        } else {
+                            PathBuf::from(path_str)
+                        }
+                    } else {
+                        PathBuf::from(path_str)
+                    };
+                    return Some(expanded);
+                }
+            }
+        }
+    }
+
+    // Fall back to XDG_CONFIG_HOME/git/ignore or ~/.config/git/ignore
+    if let Ok(xdg_config) = env::var("XDG_CONFIG_HOME") {
+        if !xdg_config.is_empty() {
+            let path = PathBuf::from(xdg_config).join("git").join("ignore");
+            if path.exists() {
+                return Some(path);
+            }
+        }
+    }
+
+    // Final fallback: ~/.config/git/ignore
+    if let Some(home) = dirs::home_dir() {
+        let path = home.join(".config").join("git").join("ignore");
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    None
 }
 
 /// Discover the jj workspace starting from the given directory
@@ -192,8 +266,12 @@ async fn main() -> Result<()> {
 
     // Snapshot to get the actual filesystem state
     let mut locked_wc = workspace.working_copy().start_mutation()?;
+
+    // Load gitignore files (global and workspace .gitignore)
+    let base_ignores = load_base_ignores(workspace.workspace_root())?;
+
     let snapshot_options = SnapshotOptions {
-        base_ignores: jj_lib::gitignore::GitIgnoreFile::empty(),
+        base_ignores,
         progress: None,
         start_tracking_matcher: &jj_lib::matchers::EverythingMatcher,
         max_new_file_size: 1024 * 1024 * 100,
