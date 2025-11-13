@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use jj_lib::config::{ConfigLayer, ConfigSource, StackedConfig};
+use jj_lib::config::{ConfigLayer, ConfigResolutionContext, ConfigSource, StackedConfig};
 use jj_lib::object_id::ObjectId;
 use jj_lib::repo::{Repo, StoreFactories};
 use jj_lib::settings::UserSettings;
@@ -64,36 +64,60 @@ fn load_user_config(config: &mut StackedConfig) -> Result<()> {
 
 /// Discover the jj workspace starting from the given directory
 fn find_workspace(start_dir: &Path) -> Result<Workspace> {
+    // First, find the workspace root directory
+    let mut current_dir = start_dir;
+    let workspace_root = loop {
+        if current_dir.join(".jj").exists() {
+            break current_dir;
+        }
+
+        match current_dir.parent() {
+            Some(parent) => current_dir = parent,
+            None => anyhow::bail!("No Jujutsu workspace found in '{}' or any parent directory", start_dir.display()),
+        }
+    };
+
     // Build config with proper layers (with_defaults includes operation.hostname/username)
     let mut config = StackedConfig::with_defaults();
 
     // Load user configuration
     load_user_config(&mut config)?;
 
-    let settings = UserSettings::from_config(config)?;
+    // Load repository-specific configuration
+    let repo_config_path = workspace_root.join(".jj").join("repo").join("config.toml");
+    if repo_config_path.exists() {
+        let layer = ConfigLayer::load_from_file(ConfigSource::Repo, repo_config_path)?;
+        config.add_layer(layer);
+    }
+
+    // Resolve conditional scopes (e.g., --when.repositories)
+    let hostname = gethostname::gethostname()
+        .to_str()
+        .map(|s| s.to_owned())
+        .unwrap_or_default();
+    let home_dir = dirs::home_dir();
+    let context = ConfigResolutionContext {
+        home_dir: home_dir.as_deref(),
+        repo_path: Some(workspace_root),
+        workspace_path: Some(workspace_root),
+        command: None,
+        hostname: hostname.as_str(),
+    };
+    let resolved_config = jj_lib::config::resolve(&config, &context)?;
+
+    // Now create settings with resolved config
+    let settings = UserSettings::from_config(resolved_config)?;
     let store_factories = StoreFactories::default();
     let working_copy_factories = default_working_copy_factories();
 
-    // Traverse up the directory tree to find the workspace root
-    let mut current_dir = start_dir;
-    loop {
-        if current_dir.join(".jj").exists() {
-            return Workspace::load(
-                &settings,
-                current_dir,
-                &store_factories,
-                &working_copy_factories,
-            )
-            .context("Failed to load workspace");
-        }
-
-        match current_dir.parent() {
-            Some(parent) => current_dir = parent,
-            None => break,
-        }
-    }
-
-    anyhow::bail!("No Jujutsu workspace found in '{}' or any parent directory", start_dir.display())
+    // Load the workspace with the complete settings
+    Workspace::load(
+        &settings,
+        workspace_root,
+        &store_factories,
+        &working_copy_factories,
+    )
+    .context("Failed to load workspace")
 }
 
 /// Create a commit with the generated message
