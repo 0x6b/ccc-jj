@@ -326,7 +326,7 @@ async fn main() -> Result<()> {
     trace!(diff = %diff, "Full diff content");
 
     if diff.trim().is_empty() {
-        info!("Empty diff, nothing to commit");
+        println!("Empty diff, nothing to commit");
         drop(locked_wc);
         return Ok(());
     }
