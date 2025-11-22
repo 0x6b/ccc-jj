@@ -306,7 +306,7 @@ async fn main() -> Result<()> {
 
     // If working copy tree matches parent tree, there's nothing to commit
     if current_tree.tree_ids() == parent_tree.tree_ids() {
-        info!("No changes detected (tree matches parent)");
+        println!("No changes detected, nothing to commit");
         drop(locked_wc);
         return Ok(());
     }
