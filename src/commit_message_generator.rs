@@ -5,6 +5,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
 use serde::Deserialize;
 use toml::from_str;
+use tracing::{debug, trace, warn};
 
 #[derive(Deserialize)]
 struct Config {
@@ -68,15 +69,22 @@ impl CommitMessageGenerator {
     /// A generated commit message string. If generation fails or the result doesn't follow a
     /// conventional commit format, returns a default commit message.
     pub fn generate(&self, diff_content: &str) -> String {
+        debug!(diff_len = diff_content.len(), "Starting commit message generation");
         self.try_generate(diff_content)
             .map(|message| {
-                if CONVENTIONAL_COMMIT_RE.is_match(message.lines().next().unwrap_or("").trim()) {
+                let first_line = message.lines().next().unwrap_or("").trim();
+                if CONVENTIONAL_COMMIT_RE.is_match(first_line) {
+                    debug!("Generated message follows conventional commit format");
                     message
                 } else {
+                    warn!(first_line = %first_line, "Generated message does not follow conventional commit format, prepending default");
                     format!("{}\n\n{message}", CONFIG.generator.default_commit_message)
                 }
             })
-            .unwrap_or_else(|| CONFIG.generator.default_commit_message.to_string())
+            .unwrap_or_else(|| {
+                warn!("Failed to generate commit message, using default");
+                CONFIG.generator.default_commit_message.to_string()
+            })
     }
 
     fn try_generate(&self, diff_content: &str) -> Option<String> {
@@ -94,6 +102,14 @@ impl CommitMessageGenerator {
             .prompt_template
             .replace("{language}", &self.language)
             .replace("{diff_content}", diff_content);
+        trace!(prompt_len = prompt.len(), "Prepared prompt for Claude");
+
+        debug!(
+            command = %self.command,
+            args = ?self.args,
+            model = %self.model,
+            "Executing Claude CLI"
+        );
 
         let mut command = Command::new(&self.command);
         command.args(&self.args);
@@ -101,12 +117,34 @@ impl CommitMessageGenerator {
         command.arg(&self.model);
         command.arg(&prompt);
 
-        let result = command
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-            .filter(|message| !message.is_empty());
+        let result = match command.output() {
+            Ok(output) => {
+                debug!(
+                    status = %output.status,
+                    stdout_len = output.stdout.len(),
+                    stderr_len = output.stderr.len(),
+                    "Claude CLI completed"
+                );
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    warn!(status = %output.status, stderr = %stderr, "Claude CLI failed");
+                    None
+                } else {
+                    let message = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if message.is_empty() {
+                        warn!("Claude CLI returned empty output");
+                        None
+                    } else {
+                        trace!(message = %message, "Claude CLI output");
+                        Some(message)
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to execute Claude CLI");
+                None
+            }
+        };
 
         spinner.finish_and_clear();
         result

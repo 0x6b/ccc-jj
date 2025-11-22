@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use tracing::{debug, info, trace};
 use jj_lib::config::{ConfigLayer, ConfigResolutionContext, ConfigSource, StackedConfig};
 use jj_lib::gitignore::GitIgnoreFile;
 use jj_lib::object_id::ObjectId;
@@ -245,30 +246,45 @@ async fn create_commit(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive(tracing::Level::INFO.into()),
+        )
+        .init();
+
     let args = Args::parse();
+    debug!(?args, "Parsed arguments");
 
     // Determine workspace path
     let workspace_path = match args.path {
         Some(p) => p,
         None => env::current_dir().context("Failed to get current directory")?,
     };
+    info!(?workspace_path, "Starting workspace discovery");
 
     // Find workspace
     let workspace = find_workspace(&workspace_path)?;
+    info!(workspace_root = ?workspace.workspace_root(), "Found workspace");
 
     // Check if working copy commit needs a description
     let repo = workspace.repo_loader().load_at_head()?;
+    debug!("Loaded repository at head");
+
     let wc_commit_id = repo
         .view()
         .get_wc_commit_id(workspace.workspace_name())
         .context("workspace should have a working-copy commit")?;
     let wc_commit = repo.store().get_commit(wc_commit_id)?;
+    debug!(wc_commit_id = %wc_commit_id.hex(), "Working copy commit");
 
     // Snapshot to get the actual filesystem state
+    debug!("Starting working copy mutation");
     let mut locked_wc = workspace.working_copy().start_mutation()?;
 
     // Load gitignore files (global and workspace .gitignore)
     let base_ignores = load_base_ignores(workspace.workspace_root())?;
+    debug!("Loaded base ignores");
 
     let snapshot_options = SnapshotOptions {
         base_ignores,
@@ -276,7 +292,9 @@ async fn main() -> Result<()> {
         start_tracking_matcher: &jj_lib::matchers::EverythingMatcher,
         max_new_file_size: 1024 * 1024 * 100,
     };
+    debug!("Taking snapshot of working copy");
     let (current_tree, _stats) = locked_wc.snapshot(&snapshot_options).await?;
+    debug!("Snapshot complete");
 
     // Check if the working copy commit has changes (compared to its parent)
     let parent_tree = if !wc_commit.parent_ids().is_empty() {
@@ -288,20 +306,27 @@ async fn main() -> Result<()> {
 
     // If working copy tree matches parent tree, there's nothing to commit
     if current_tree.tree_ids() == parent_tree.tree_ids() {
+        info!("No changes detected (tree matches parent)");
         drop(locked_wc);
         return Ok(());
     }
+    debug!("Changes detected in working copy");
 
     // If working copy commit already has a description, don't overwrite it
     if !wc_commit.description().is_empty() {
+        info!(description = %wc_commit.description(), "Working copy already has description, skipping");
         drop(locked_wc);
         return Ok(());
     }
 
     // Generate diff for commit message (using jj-lib API, not external command)
+    debug!("Generating diff");
     let diff = get_tree_diff(&repo, &parent_tree, &current_tree).await?;
+    debug!(diff_len = diff.len(), "Diff generated");
+    trace!(diff = %diff, "Full diff content");
 
     if diff.trim().is_empty() {
+        info!("Empty diff, nothing to commit");
         drop(locked_wc);
         return Ok(());
     }
@@ -310,9 +335,14 @@ async fn main() -> Result<()> {
     drop(locked_wc);
 
     // Generate commit message and create commit
+    info!(language = %args.language, model = %args.model, "Generating commit message with Claude");
     let generator = CommitMessageGenerator::new(&args.language, &args.model);
     let commit_message = generator.generate(&diff);
+    debug!(commit_message = %commit_message, "Generated commit message");
+
+    info!("Creating commit");
     create_commit(&workspace, &commit_message, current_tree).await?;
+    info!("Commit created successfully");
 
     Ok(())
 }
