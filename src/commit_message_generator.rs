@@ -66,25 +66,21 @@ impl CommitMessageGenerator {
     /// - `diff_content` - The diff content to analyze for message generation
     ///
     /// # Returns
-    /// A generated commit message string. If generation fails or the result doesn't follow a
-    /// conventional commit format, returns a default commit message.
-    pub fn generate(&self, diff_content: &str) -> String {
+    /// `Some(message)` if generation succeeds, `None` if it fails.
+    /// If the generated message doesn't follow conventional commit format, the default
+    /// commit message prefix is prepended.
+    pub fn generate(&self, diff_content: &str) -> Option<String> {
         debug!(diff_len = diff_content.len(), "Starting commit message generation");
-        self.try_generate(diff_content)
-            .map(|message| {
-                let first_line = message.lines().next().unwrap_or("").trim();
-                if CONVENTIONAL_COMMIT_RE.is_match(first_line) {
-                    debug!("Generated message follows conventional commit format");
-                    message
-                } else {
-                    warn!(first_line = %first_line, "Generated message does not follow conventional commit format, prepending default");
-                    format!("{}\n\n{message}", CONFIG.generator.default_commit_message)
-                }
-            })
-            .unwrap_or_else(|| {
-                warn!("Failed to generate commit message, using default");
-                CONFIG.generator.default_commit_message.to_string()
-            })
+        self.try_generate(diff_content).map(|message| {
+            let first_line = message.lines().next().unwrap_or("").trim();
+            if CONVENTIONAL_COMMIT_RE.is_match(first_line) {
+                debug!("Generated message follows conventional commit format");
+                message
+            } else {
+                warn!(first_line = %first_line, "Generated message does not follow conventional commit format, prepending default");
+                format!("{}\n\n{message}", CONFIG.generator.default_commit_message)
+            }
+        })
     }
 
     fn try_generate(&self, diff_content: &str) -> Option<String> {

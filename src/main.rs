@@ -337,7 +337,12 @@ async fn main() -> Result<()> {
     // Generate commit message and create commit
     info!(language = %args.language, model = %args.model, "Generating commit message with Claude");
     let generator = CommitMessageGenerator::new(&args.language, &args.model);
-    let commit_message = generator.generate(&diff);
+    let commit_message = match generator.generate(&diff) {
+        Some(msg) => msg,
+        None => {
+            anyhow::bail!("Failed to generate commit message, aborting commit");
+        }
+    };
     debug!(commit_message = %commit_message, "Generated commit message");
 
     info!("Creating commit");
