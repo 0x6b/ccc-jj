@@ -106,9 +106,9 @@ fn get_global_git_excludes_file() -> Option<PathBuf> {
                 let path_str = path_str.trim();
                 if !path_str.is_empty() {
                     // Expand ~ to home directory if present
-                    let expanded = if path_str.starts_with("~/") {
+                    let expanded = if let Some(stripped) = path_str.strip_prefix("~/") {
                         if let Some(home) = dirs::home_dir() {
-                            home.join(&path_str[2..])
+                            home.join(stripped)
                         } else {
                             PathBuf::from(path_str)
                         }

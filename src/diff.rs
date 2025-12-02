@@ -89,12 +89,12 @@ pub async fn get_tree_diff(
         let diff_output = match (values.before.as_resolved(), values.after.as_resolved()) {
             (None, Some(Some(TreeValue::File { id, .. }))) => {
                 trace!(path = %path_str, "Processing added file");
-                format_added_removed_diff(repo, &entry.path, &path_str, id, true, MAX_LINES).await?
+                format_added_removed_diff(repo, &entry.path, path_str, id, true, MAX_LINES).await?
             }
 
             (Some(Some(TreeValue::File { id, .. })), None) => {
                 trace!(path = %path_str, "Processing deleted file");
-                format_added_removed_diff(repo, &entry.path, &path_str, id, false, MAX_LINES)
+                format_added_removed_diff(repo, &entry.path, path_str, id, false, MAX_LINES)
                     .await?
             }
 
