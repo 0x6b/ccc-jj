@@ -94,8 +94,7 @@ pub async fn get_tree_diff(
 
             (Some(Some(TreeValue::File { id, .. })), None) => {
                 trace!(path = %path_str, "Processing deleted file");
-                format_added_removed_diff(repo, &entry.path, path_str, id, false, MAX_LINES)
-                    .await?
+                format_added_removed_diff(repo, &entry.path, path_str, id, false, MAX_LINES).await?
             }
 
             (

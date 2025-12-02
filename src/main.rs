@@ -14,7 +14,7 @@ use jj_lib::object_id::ObjectId;
 use jj_lib::repo::{Repo, StoreFactories};
 use jj_lib::settings::UserSettings;
 use jj_lib::working_copy::SnapshotOptions;
-use jj_lib::workspace::{default_working_copy_factories, Workspace};
+use jj_lib::workspace::{Workspace, default_working_copy_factories};
 use tracing::{debug, info, trace};
 
 use anyhow::bail;
@@ -100,9 +100,8 @@ fn get_global_git_excludes_file() -> Option<PathBuf> {
     if let Ok(output) = Command::new("git")
         .args(["config", "--global", "--get", "core.excludesFile"])
         .output()
-    {
-        if output.status.success() {
-            if let Ok(path_str) = std::str::from_utf8(&output.stdout) {
+        && output.status.success()
+            && let Ok(path_str) = std::str::from_utf8(&output.stdout) {
                 let path_str = path_str.trim();
                 if !path_str.is_empty() {
                     // Expand ~ to home directory if present
@@ -118,18 +117,15 @@ fn get_global_git_excludes_file() -> Option<PathBuf> {
                     return Some(expanded);
                 }
             }
-        }
-    }
 
     // Fall back to XDG_CONFIG_HOME/git/ignore or ~/.config/git/ignore
-    if let Ok(xdg_config) = var("XDG_CONFIG_HOME") {
-        if !xdg_config.is_empty() {
+    if let Ok(xdg_config) = var("XDG_CONFIG_HOME")
+        && !xdg_config.is_empty() {
             let path = PathBuf::from(xdg_config).join("git").join("ignore");
             if path.exists() {
                 return Some(path);
             }
         }
-    }
 
     // Final fallback: ~/.config/git/ignore
     if let Some(home) = dirs::home_dir() {
