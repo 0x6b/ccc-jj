@@ -8,17 +8,22 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use tracing::{debug, info, trace};
 use jj_lib::config::{ConfigLayer, ConfigResolutionContext, ConfigSource, StackedConfig};
 use jj_lib::gitignore::GitIgnoreFile;
 use jj_lib::object_id::ObjectId;
 use jj_lib::repo::{Repo, StoreFactories};
 use jj_lib::settings::UserSettings;
-use jj_lib::workspace::{default_working_copy_factories, Workspace};
 use jj_lib::working_copy::SnapshotOptions;
+use jj_lib::workspace::{default_working_copy_factories, Workspace};
+use tracing::{debug, info, trace};
 
+use anyhow::bail;
 use commit_message_generator::CommitMessageGenerator;
 use diff::get_tree_diff;
+use gethostname::gethostname;
+use jj_lib::config::resolve;
+use std::env::var;
+use tracing_subscriber::fmt;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Auto-commit changes in a jj workspace using Claude for commit messages", long_about = None)]
@@ -117,7 +122,7 @@ fn get_global_git_excludes_file() -> Option<PathBuf> {
     }
 
     // Fall back to XDG_CONFIG_HOME/git/ignore or ~/.config/git/ignore
-    if let Ok(xdg_config) = env::var("XDG_CONFIG_HOME") {
+    if let Ok(xdg_config) = var("XDG_CONFIG_HOME") {
         if !xdg_config.is_empty() {
             let path = PathBuf::from(xdg_config).join("git").join("ignore");
             if path.exists() {
@@ -148,7 +153,10 @@ fn find_workspace(start_dir: &Path) -> Result<Workspace> {
 
         match current_dir.parent() {
             Some(parent) => current_dir = parent,
-            None => anyhow::bail!("No Jujutsu workspace found in '{}' or any parent directory", start_dir.display()),
+            None => bail!(
+                "No Jujutsu workspace found in '{}' or any parent directory",
+                start_dir.display()
+            ),
         }
     };
 
@@ -166,7 +174,7 @@ fn find_workspace(start_dir: &Path) -> Result<Workspace> {
     }
 
     // Resolve conditional scopes (e.g., --when.repositories)
-    let hostname = gethostname::gethostname()
+    let hostname = gethostname()
         .to_str()
         .map(|s| s.to_owned())
         .unwrap_or_default();
@@ -178,7 +186,7 @@ fn find_workspace(start_dir: &Path) -> Result<Workspace> {
         command: None,
         hostname: hostname.as_str(),
     };
-    let resolved_config = jj_lib::config::resolve(&config, &context)?;
+    let resolved_config = resolve(&config, &context)?;
 
     // Now create settings with resolved config
     let settings = UserSettings::from_config(resolved_config)?;
@@ -228,7 +236,10 @@ async fn create_commit(
         .new_commit(vec![commit_with_description.id().clone()], tree)
         .write()?;
 
-    mut_repo.set_wc_commit(workspace.workspace_name().to_owned(), new_wc_commit.id().clone())?;
+    mut_repo.set_wc_commit(
+        workspace.workspace_name().to_owned(),
+        new_wc_commit.id().clone(),
+    )?;
 
     let new_repo = tx.commit("auto-commit via ccc-jj")?;
 
@@ -237,7 +248,10 @@ async fn create_commit(
     locked_wc.finish(new_repo.operation().id().clone()).await?;
 
     let author = commit_with_description.author();
-    println!("Committed change {} with message:", commit_with_description.id().hex());
+    println!(
+        "Committed change {} with message:",
+        commit_with_description.id().hex()
+    );
     println!("Author: {} <{}>", author.name, author.email);
     println!("{}", commit_message);
 
@@ -246,7 +260,7 @@ async fn create_commit(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
+    fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive(tracing::Level::WARN.into()),
@@ -301,7 +315,10 @@ async fn main() -> Result<()> {
         let parent_commit = repo.store().get_commit(&wc_commit.parent_ids()[0])?;
         parent_commit.tree()
     } else {
-        jj_lib::merged_tree::MergedTree::resolved(repo.store().clone(), repo.store().empty_tree_id().clone())
+        jj_lib::merged_tree::MergedTree::resolved(
+            repo.store().clone(),
+            repo.store().empty_tree_id().clone(),
+        )
     };
 
     // If working copy tree matches parent tree, there's nothing to commit
@@ -340,7 +357,7 @@ async fn main() -> Result<()> {
     let commit_message = match generator.generate(&diff) {
         Some(msg) => msg,
         None => {
-            anyhow::bail!("Failed to generate commit message, aborting commit");
+            bail!("Failed to generate commit message, aborting commit");
         }
     };
     debug!(commit_message = %commit_message, "Generated commit message");

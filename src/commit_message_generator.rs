@@ -70,7 +70,10 @@ impl CommitMessageGenerator {
     /// If the generated message doesn't follow conventional commit format, the default
     /// commit message prefix is prepended.
     pub fn generate(&self, diff_content: &str) -> Option<String> {
-        debug!(diff_len = diff_content.len(), "Starting commit message generation");
+        debug!(
+            diff_len = diff_content.len(),
+            "Starting commit message generation"
+        );
         self.try_generate(diff_content).map(|message| {
             let first_line = message.lines().next().unwrap_or("").trim();
             if CONVENTIONAL_COMMIT_RE.is_match(first_line) {

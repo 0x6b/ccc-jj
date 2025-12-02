@@ -6,6 +6,7 @@ use jj_lib::backend::TreeValue;
 use jj_lib::repo::{ReadonlyRepo, Repo};
 use similar::TextDiff;
 use tokio::io::AsyncReadExt;
+use tokio::try_join;
 use tracing::{debug, trace};
 
 const MAX_LINES: usize = 50;
@@ -18,7 +19,11 @@ async fn read_file_content(
     id: &jj_lib::backend::FileId,
 ) -> Result<Vec<u8>> {
     let mut content = Vec::new();
-    repo.store().read_file(path, id).await?.read_to_end(&mut content).await?;
+    repo.store()
+        .read_file(path, id)
+        .await?
+        .read_to_end(&mut content)
+        .await?;
     Ok(content)
 }
 
@@ -32,12 +37,19 @@ async fn format_added_removed_diff(
     max_lines: usize,
 ) -> Result<String> {
     let (status, from, to) = if is_added {
-        ("new file", "/dev/null".to_string(), format!("b/{}", path_str))
+        ("new file", "/dev/null".to_string(), format!("b/{path_str}"))
     } else {
-        ("deleted file", format!("a/{}", path_str), "/dev/null".to_string())
+        (
+            "deleted file",
+            format!("a/{path_str}"),
+            "/dev/null".to_string(),
+        )
     };
 
-    let mut output = format!("diff --git a/{0} b/{0}\n{status}\n--- {from}\n+++ {to}\n", path_str);
+    let mut output = format!(
+        "diff --git a/{0} b/{0}\n{status}\n--- {from}\n+++ {to}\n",
+        path_str
+    );
     let content = read_file_content(repo, path, id).await?;
 
     match String::from_utf8(content) {
@@ -46,7 +58,7 @@ async fn format_added_removed_diff(
             let prefix = if is_added { '+' } else { '-' };
 
             lines.iter().take(max_lines).for_each(|line| {
-                let _ = writeln!(output, "{}{}", prefix, line);
+                let _ = writeln!(output, "{prefix}{line}");
             });
 
             if lines.len() > max_lines {
@@ -82,24 +94,33 @@ pub async fn get_tree_diff(
 
             (Some(Some(TreeValue::File { id, .. })), None) => {
                 trace!(path = %path_str, "Processing deleted file");
-                format_added_removed_diff(repo, &entry.path, &path_str, id, false, MAX_LINES).await?
+                format_added_removed_diff(repo, &entry.path, &path_str, id, false, MAX_LINES)
+                    .await?
             }
 
-            (Some(Some(TreeValue::File { id: before_id, .. })),
-             Some(Some(TreeValue::File { id: after_id, .. }))) => {
+            (
+                Some(Some(TreeValue::File { id: before_id, .. })),
+                Some(Some(TreeValue::File { id: after_id, .. })),
+            ) => {
                 trace!(path = %path_str, "Processing modified file");
-                let (before_content, after_content) = tokio::try_join!(
+                let (before_content, after_content) = try_join!(
                     read_file_content(repo, &entry.path, before_id),
                     read_file_content(repo, &entry.path, after_id)
                 )?;
 
-                match (String::from_utf8(before_content), String::from_utf8(after_content)) {
+                match (
+                    String::from_utf8(before_content),
+                    String::from_utf8(after_content),
+                ) {
                     (Ok(before_text), Ok(after_text)) => {
                         let diff = TextDiff::from_lines(&before_text, &after_text);
-                        format!("diff --git a/{0} b/{0}\n{1}", path_str,
+                        format!(
+                            "diff --git a/{0} b/{0}\n{1}",
+                            path_str,
                             diff.unified_diff()
                                 .context_radius(CONTEXT_LINES)
-                                .header(&format!("a/{}", path_str), &format!("b/{}", path_str)))
+                                .header(&format!("a/{path_str}"), &format!("b/{path_str}"))
+                        )
                     }
                     _ => {
                         trace!(path = %path_str, "Binary file modified");
