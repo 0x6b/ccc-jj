@@ -288,6 +288,7 @@ async fn main() -> Result<()> {
         base_ignores,
         progress: None,
         start_tracking_matcher: &jj_lib::matchers::EverythingMatcher,
+        force_tracking_matcher: &jj_lib::matchers::NothingMatcher,
         max_new_file_size: 1024 * 1024 * 100,
     };
     debug!("Taking snapshot of working copy");

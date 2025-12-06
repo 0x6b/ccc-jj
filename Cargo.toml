@@ -8,7 +8,7 @@ name = "jc"
 path = "src/main.rs"
 
 [dependencies]
-jj-lib = { git = "https://github.com/jj-vcs/jj.git", rev = "3f486f3f82731978296b54ac69eff72cd0ec58ce" }
+jj-lib = { git = "https://github.com/jj-vcs/jj.git", tag = "v0.36.0" }
 tokio = { version = "1.48.0", features = ["macros", "io-util", "rt-multi-thread"] }
 globset = "0.4.18"
 anyhow = "1.0.100"
