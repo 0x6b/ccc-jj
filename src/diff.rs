@@ -2,22 +2,21 @@ use std::fmt::Write;
 
 use anyhow::Result;
 use futures::StreamExt;
-use jj_lib::backend::TreeValue;
-use jj_lib::repo::{ReadonlyRepo, Repo};
+use jj_lib::{
+    backend::{FileId, TreeValue},
+    merged_tree::MergedTree,
+    repo::{ReadonlyRepo, Repo},
+    repo_path::RepoPath,
+};
 use similar::TextDiff;
-use tokio::io::AsyncReadExt;
-use tokio::try_join;
+use tokio::{io::AsyncReadExt, try_join};
 use tracing::{debug, trace};
 
 const MAX_LINES: usize = 50;
 const CONTEXT_LINES: usize = 2;
 
 /// Read file content from store
-async fn read_file_content(
-    repo: &ReadonlyRepo,
-    path: &jj_lib::repo_path::RepoPath,
-    id: &jj_lib::backend::FileId,
-) -> Result<Vec<u8>> {
+async fn read_file_content(repo: &ReadonlyRepo, path: &RepoPath, id: &FileId) -> Result<Vec<u8>> {
     let mut content = Vec::new();
     repo.store()
         .read_file(path, id)
@@ -30,26 +29,19 @@ async fn read_file_content(
 /// Format file diff (added/removed) with line truncation
 async fn format_added_removed_diff(
     repo: &ReadonlyRepo,
-    path: &jj_lib::repo_path::RepoPath,
+    path: &RepoPath,
     path_str: &str,
-    id: &jj_lib::backend::FileId,
+    id: &FileId,
     is_added: bool,
     max_lines: usize,
 ) -> Result<String> {
     let (status, from, to) = if is_added {
         ("new file", "/dev/null".to_string(), format!("b/{path_str}"))
     } else {
-        (
-            "deleted file",
-            format!("a/{path_str}"),
-            "/dev/null".to_string(),
-        )
+        ("deleted file", format!("a/{path_str}"), "/dev/null".to_string())
     };
 
-    let mut output = format!(
-        "diff --git a/{0} b/{0}\n{status}\n--- {from}\n+++ {to}\n",
-        path_str
-    );
+    let mut output = format!("diff --git a/{path_str} b/{path_str}\n{status}\n--- {from}\n+++ {to}\n");
     let content = read_file_content(repo, path, id).await?;
 
     match String::from_utf8(content) {
@@ -74,8 +66,8 @@ async fn format_added_removed_diff(
 /// Get the diff between two trees using jj-lib
 pub async fn get_tree_diff(
     repo: &ReadonlyRepo,
-    from_tree: &jj_lib::merged_tree::MergedTree,
-    to_tree: &jj_lib::merged_tree::MergedTree,
+    from_tree: &MergedTree,
+    to_tree: &MergedTree,
 ) -> Result<String> {
     debug!("Starting tree diff");
     let mut output = String::new();
@@ -107,10 +99,7 @@ pub async fn get_tree_diff(
                     read_file_content(repo, &entry.path, after_id)
                 )?;
 
-                match (
-                    String::from_utf8(before_content),
-                    String::from_utf8(after_content),
-                ) {
+                match (String::from_utf8(before_content), String::from_utf8(after_content)) {
                     (Ok(before_text), Ok(after_text)) => {
                         let diff = TextDiff::from_lines(&before_text, &after_text);
                         format!(
@@ -123,7 +112,7 @@ pub async fn get_tree_diff(
                     }
                     _ => {
                         trace!(path = %path_str, "Binary file modified");
-                        format!("diff --git a/{0} b/{0}\n(binary file modified)\n", path_str)
+                        format!("diff --git a/{path_str} b/{path_str}\n(binary file modified)\n")
                     }
                 }
             }

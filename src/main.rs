@@ -1,28 +1,30 @@
 mod commit_message_generator;
 mod diff;
 
-use std::env;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::Arc;
+use std::{
+    env,
+    env::var,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Arc,
+};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
-use jj_lib::config::{ConfigLayer, ConfigResolutionContext, ConfigSource, StackedConfig};
-use jj_lib::gitignore::GitIgnoreFile;
-use jj_lib::object_id::ObjectId;
-use jj_lib::repo::{Repo, StoreFactories};
-use jj_lib::settings::UserSettings;
-use jj_lib::working_copy::SnapshotOptions;
-use jj_lib::workspace::{Workspace, default_working_copy_factories};
-use tracing::{debug, info, trace};
-
-use anyhow::bail;
 use commit_message_generator::CommitMessageGenerator;
 use diff::get_tree_diff;
 use gethostname::gethostname;
-use jj_lib::config::resolve;
-use std::env::var;
+use jj_lib::{
+    config::{ConfigLayer, ConfigResolutionContext, ConfigSource, StackedConfig, resolve},
+    gitignore::GitIgnoreFile,
+    merged_tree::MergedTree,
+    object_id::ObjectId,
+    repo::{Repo, StoreFactories},
+    settings::UserSettings,
+    working_copy::SnapshotOptions,
+    workspace::{Workspace, default_working_copy_factories},
+};
+use tracing::{debug, info, trace};
 use tracing_subscriber::fmt;
 
 #[derive(Parser, Debug)]
@@ -80,9 +82,7 @@ fn load_base_ignores(workspace_root: &Path) -> Result<Arc<GitIgnoreFile>> {
 
     if let Some(excludes_path) = global_excludes {
         // Chain the global excludes file (ignore errors if file doesn't exist)
-        git_ignores = git_ignores
-            .chain_with_file("", excludes_path)
-            .unwrap_or(git_ignores);
+        git_ignores = git_ignores.chain_with_file("", excludes_path).unwrap_or(git_ignores);
     }
 
     // Load workspace root .gitignore
@@ -101,31 +101,33 @@ fn get_global_git_excludes_file() -> Option<PathBuf> {
         .args(["config", "--global", "--get", "core.excludesFile"])
         .output()
         && output.status.success()
-            && let Ok(path_str) = std::str::from_utf8(&output.stdout) {
-                let path_str = path_str.trim();
-                if !path_str.is_empty() {
-                    // Expand ~ to home directory if present
-                    let expanded = if let Some(stripped) = path_str.strip_prefix("~/") {
-                        if let Some(home) = dirs::home_dir() {
-                            home.join(stripped)
-                        } else {
-                            PathBuf::from(path_str)
-                        }
-                    } else {
-                        PathBuf::from(path_str)
-                    };
-                    return Some(expanded);
+        && let Ok(path_str) = std::str::from_utf8(&output.stdout)
+    {
+        let path_str = path_str.trim();
+        if !path_str.is_empty() {
+            // Expand ~ to home directory if present
+            let expanded = if let Some(stripped) = path_str.strip_prefix("~/") {
+                if let Some(home) = dirs::home_dir() {
+                    home.join(stripped)
+                } else {
+                    PathBuf::from(path_str)
                 }
-            }
+            } else {
+                PathBuf::from(path_str)
+            };
+            return Some(expanded);
+        }
+    }
 
     // Fall back to XDG_CONFIG_HOME/git/ignore or ~/.config/git/ignore
     if let Ok(xdg_config) = var("XDG_CONFIG_HOME")
-        && !xdg_config.is_empty() {
-            let path = PathBuf::from(xdg_config).join("git").join("ignore");
-            if path.exists() {
-                return Some(path);
-            }
+        && !xdg_config.is_empty()
+    {
+        let path = PathBuf::from(xdg_config).join("git").join("ignore");
+        if path.exists() {
+            return Some(path);
         }
+    }
 
     // Final fallback: ~/.config/git/ignore
     if let Some(home) = dirs::home_dir() {
@@ -170,10 +172,7 @@ fn find_workspace(start_dir: &Path) -> Result<Workspace> {
     }
 
     // Resolve conditional scopes (e.g., --when.repositories)
-    let hostname = gethostname()
-        .to_str()
-        .map(|s| s.to_owned())
-        .unwrap_or_default();
+    let hostname = gethostname().to_str().map(|s| s.to_owned()).unwrap_or_default();
     let home_dir = dirs::home_dir();
     let context = ConfigResolutionContext {
         home_dir: home_dir.as_deref(),
@@ -190,20 +189,15 @@ fn find_workspace(start_dir: &Path) -> Result<Workspace> {
     let working_copy_factories = default_working_copy_factories();
 
     // Load the workspace with the complete settings
-    Workspace::load(
-        &settings,
-        workspace_root,
-        &store_factories,
-        &working_copy_factories,
-    )
-    .context("Failed to load workspace")
+    Workspace::load(&settings, workspace_root, &store_factories, &working_copy_factories)
+        .context("Failed to load workspace")
 }
 
 /// Create a commit with the generated message
 async fn create_commit(
     workspace: &Workspace,
     commit_message: &str,
-    tree: jj_lib::merged_tree::MergedTree,
+    tree: MergedTree,
 ) -> Result<()> {
     let repo = workspace.repo_loader().load_at_head()?;
 
@@ -232,10 +226,7 @@ async fn create_commit(
         .new_commit(vec![commit_with_description.id().clone()], tree)
         .write()?;
 
-    mut_repo.set_wc_commit(
-        workspace.workspace_name().to_owned(),
-        new_wc_commit.id().clone(),
-    )?;
+    mut_repo.set_wc_commit(workspace.workspace_name().to_owned(), new_wc_commit.id().clone())?;
 
     let new_repo = tx.commit("auto-commit via ccc-jj")?;
 
@@ -244,12 +235,9 @@ async fn create_commit(
     locked_wc.finish(new_repo.operation().id().clone()).await?;
 
     let author = commit_with_description.author();
-    println!(
-        "Committed change {} with message:",
-        commit_with_description.id().hex()
-    );
+    println!("Committed change {} with message:", commit_with_description.id().hex());
     println!("Author: {} <{}>", author.name, author.email);
-    println!("{}", commit_message);
+    println!("{commit_message}");
 
     Ok(())
 }
