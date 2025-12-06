@@ -189,6 +189,7 @@ dependencies = [
  "dirs",
  "futures",
  "gethostname",
+ "globset",
  "indicatif",
  "jj-lib",
  "regex",

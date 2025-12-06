@@ -1,4 +1,8 @@
-use std::{process::Command, sync::LazyLock};
+use std::{
+    io::Write,
+    process::{Command, Stdio},
+    sync::LazyLock,
+};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
@@ -10,6 +14,7 @@ use tracing::{debug, trace, warn};
 struct Config {
     prompt: Prompt,
     generator: Generator,
+    diff: DiffConfig,
 }
 
 #[derive(Deserialize)]
@@ -22,6 +27,16 @@ struct Generator {
     command: String,
     args: Vec<String>,
     default_commit_message: String,
+}
+
+#[derive(Deserialize)]
+struct DiffConfig {
+    collapse_patterns: Vec<String>,
+}
+
+/// Get the collapse patterns from config
+pub fn collapse_patterns() -> &'static [String] {
+    &CONFIG.diff.collapse_patterns
 }
 
 static CONFIG: LazyLock<Config> = LazyLock::new(|| {
@@ -103,16 +118,28 @@ impl CommitMessageGenerator {
             command = %self.command,
             args = ?self.args,
             model = %self.model,
-            "Executing Claude CLI"
+            prompt_len = prompt.len(),
+            "Executing Claude CLI via stdin"
         );
 
-        let mut command = Command::new(&self.command);
-        command.args(&self.args);
-        command.arg("--model");
-        command.arg(&self.model);
-        command.arg(&prompt);
+        // Use stdin to pass prompt (avoids "Argument list too long" for large diffs)
+        let result = Command::new(&self.command)
+            .args(&self.args)
+            .arg("--model")
+            .arg(&self.model)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                // Write prompt to stdin
+                if let Some(mut stdin) = child.stdin.take() {
+                    stdin.write_all(prompt.as_bytes())?;
+                }
+                child.wait_with_output()
+            });
 
-        let result = match command.output() {
+        let result = match result {
             Ok(output) => {
                 debug!(
                     status = %output.status,

@@ -6,6 +6,36 @@ args = ["-p", "--output-format", "text"]
 # Fallback message if generation fails
 default_commit_message = "chore: update changes"
 
+[diff]
+# Files matching these patterns show summary only (not full diff)
+# Useful for large generated/vendored files that add noise
+collapse_patterns = [
+  # Lock files
+  "*.lock",
+  "package-lock.json",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  "composer.lock",
+  "Gemfile.lock",
+  "poetry.lock",
+  "Pipfile.lock",
+  "flake.lock",
+  # Minified/bundled
+  "*.min.js",
+  "*.min.css",
+  "*.bundle.js",
+  "*.chunk.js",
+  # Generated code
+  "*.generated.*",
+  "*.pb.go",
+  "*.pb.rs",
+  "*_generated.rs",
+  # Vendored
+  "vendor/**",
+  "node_modules/**",
+  "third_party/**",
+]
+
 [prompt]
 # A prompt template for generating commit messages
 # Variables to be replaced at run time: {language}, {diff_content}
