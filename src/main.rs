@@ -11,8 +11,8 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use commit_message_generator::CommitMessageGenerator;
-use diff::get_tree_diff;
+use commit_message_generator::{CommitMessageGenerator, collapse_patterns};
+use diff::{build_collapse_matcher, get_tree_diff};
 use gethostname::gethostname;
 use jj_lib::{
     config::{ConfigLayer, ConfigResolutionContext, ConfigSource, StackedConfig, resolve},
@@ -322,7 +322,8 @@ async fn main() -> Result<()> {
 
     // Generate diff for commit message (using jj-lib API, not external command)
     debug!("Generating diff");
-    let diff = get_tree_diff(&repo, &parent_tree, &current_tree).await?;
+    let collapse_matcher = build_collapse_matcher(collapse_patterns());
+    let diff = get_tree_diff(&repo, &parent_tree, &current_tree, collapse_matcher.as_ref()).await?;
     debug!(diff_len = diff.len(), "Diff generated");
     trace!(diff = %diff, "Full diff content");
 
