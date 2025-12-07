@@ -91,11 +91,29 @@ async fn format_added_removed_diff(
     Ok(output)
 }
 
-/// Format a collapsed summary for files matching collapse patterns
-fn format_collapsed_summary(path_str: &str, added: usize, removed: usize, status: &str) -> String {
+/// Determine the collapse reason based on limits
+fn collapse_reason(
+    pattern_match: bool,
+    line_count: usize,
+    byte_size: usize,
+    max_lines: usize,
+    max_bytes: usize,
+) -> &'static str {
+    if pattern_match {
+        "collapsed: matches pattern"
+    } else if line_count > max_lines {
+        "collapsed: exceeds line limit"
+    } else if byte_size > max_bytes {
+        "collapsed: exceeds size limit"
+    } else {
+        "collapsed"
+    }
+}
+
+/// Format a collapsed summary for files matching collapse patterns or size limits
+fn format_collapsed_summary(path_str: &str, added: usize, removed: usize, status: &str, reason: &str) -> String {
     format!(
-        "diff --git a/{0} b/{0}\n{1} (+{2} -{3} lines, collapsed)\n",
-        path_str, status, added, removed
+        "diff --git a/{path_str} b/{path_str}\n{status} (+{added} -{removed} lines, {reason})\n"
     )
 }
 
@@ -105,6 +123,8 @@ pub async fn get_tree_diff(
     from_tree: &MergedTree,
     to_tree: &MergedTree,
     collapse_matcher: Option<&GlobSet>,
+    max_diff_lines: usize,
+    max_diff_bytes: usize,
 ) -> Result<String> {
     debug!("Starting tree diff");
     let mut output = String::new();
@@ -123,12 +143,15 @@ pub async fn get_tree_diff(
 
         let diff_output = match (values.before.as_resolved(), values.after.as_resolved()) {
             (None, Some(Some(TreeValue::File { id, .. }))) => {
-                trace!(path = %path_str, collapsed = should_collapse, "Processing added file");
-                if should_collapse {
-                    let content = read_file_content(repo, &entry.path, id).await?;
-                    let line_count = String::from_utf8_lossy(&content).lines().count();
+                let content = read_file_content(repo, &entry.path, id).await?;
+                let byte_size = content.len();
+                let line_count = String::from_utf8_lossy(&content).lines().count();
+                let should_collapse_size = line_count > max_diff_lines || byte_size > max_diff_bytes;
+                trace!(path = %path_str, collapsed = should_collapse, collapsed_size = should_collapse_size, lines = line_count, bytes = byte_size, "Processing added file");
+                if should_collapse || should_collapse_size {
                     collapsed_count += 1;
-                    format_collapsed_summary(path_str, line_count, 0, "new file")
+                    let reason = collapse_reason(should_collapse, line_count, byte_size, max_diff_lines, max_diff_bytes);
+                    format_collapsed_summary(path_str, line_count, 0, "new file", reason)
                 } else {
                     format_added_removed_diff(repo, &entry.path, path_str, id, true, MAX_LINES)
                         .await?
@@ -136,12 +159,15 @@ pub async fn get_tree_diff(
             }
 
             (Some(Some(TreeValue::File { id, .. })), None) => {
-                trace!(path = %path_str, collapsed = should_collapse, "Processing deleted file");
-                if should_collapse {
-                    let content = read_file_content(repo, &entry.path, id).await?;
-                    let line_count = String::from_utf8_lossy(&content).lines().count();
+                let content = read_file_content(repo, &entry.path, id).await?;
+                let byte_size = content.len();
+                let line_count = String::from_utf8_lossy(&content).lines().count();
+                let should_collapse_size = line_count > max_diff_lines || byte_size > max_diff_bytes;
+                trace!(path = %path_str, collapsed = should_collapse, collapsed_size = should_collapse_size, lines = line_count, bytes = byte_size, "Processing deleted file");
+                if should_collapse || should_collapse_size {
                     collapsed_count += 1;
-                    format_collapsed_summary(path_str, 0, line_count, "deleted file")
+                    let reason = collapse_reason(should_collapse, line_count, byte_size, max_diff_lines, max_diff_bytes);
+                    format_collapsed_summary(path_str, 0, line_count, "deleted file", reason)
                 } else {
                     format_added_removed_diff(repo, &entry.path, path_str, id, false, MAX_LINES)
                         .await?
@@ -152,25 +178,27 @@ pub async fn get_tree_diff(
                 Some(Some(TreeValue::File { id: before_id, .. })),
                 Some(Some(TreeValue::File { id: after_id, .. })),
             ) => {
-                trace!(path = %path_str, collapsed = should_collapse, "Processing modified file");
                 let (before_content, after_content) = try_join!(
                     read_file_content(repo, &entry.path, before_id),
                     read_file_content(repo, &entry.path, after_id)
                 )?;
 
                 match (
-                    String::from_utf8(before_content),
-                    String::from_utf8(after_content),
+                    String::from_utf8(before_content.clone()),
+                    String::from_utf8(after_content.clone()),
                 ) {
                     (Ok(before_text), Ok(after_text)) => {
-                        if should_collapse {
-                            let diff = TextDiff::from_lines(&before_text, &after_text);
-                            let added = diff.iter_all_changes().filter(|c| c.tag() == similar::ChangeTag::Insert).count();
-                            let removed = diff.iter_all_changes().filter(|c| c.tag() == similar::ChangeTag::Delete).count();
+                        let diff = TextDiff::from_lines(&before_text, &after_text);
+                        let added = diff.iter_all_changes().filter(|c| c.tag() == similar::ChangeTag::Insert).count();
+                        let removed = diff.iter_all_changes().filter(|c| c.tag() == similar::ChangeTag::Delete).count();
+                        let byte_size = before_content.len().max(after_content.len());
+                        let should_collapse_size = added + removed > max_diff_lines || byte_size > max_diff_bytes;
+                        trace!(path = %path_str, collapsed = should_collapse, collapsed_size = should_collapse_size, lines = added + removed, bytes = byte_size, "Processing modified file");
+                        if should_collapse || should_collapse_size {
                             collapsed_count += 1;
-                            format_collapsed_summary(path_str, added, removed, "modified")
+                            let reason = collapse_reason(should_collapse, added + removed, byte_size, max_diff_lines, max_diff_bytes);
+                            format_collapsed_summary(path_str, added, removed, "modified", reason)
                         } else {
-                            let diff = TextDiff::from_lines(&before_text, &after_text);
                             format!(
                                 "diff --git a/{0} b/{0}\n{1}",
                                 path_str,

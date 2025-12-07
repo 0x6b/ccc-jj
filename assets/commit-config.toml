@@ -7,6 +7,13 @@ args = ["-p", "--output-format", "text"]
 default_commit_message = "chore: update changes"
 
 [diff]
+# Files with more changed lines than this threshold are collapsed to a summary
+# Helps avoid exceeding LLM context limits with large file changes
+max_diff_lines = 200
+# Files with diff larger than this byte size are collapsed to a summary
+# Catches edge cases like large SVGs or minified files with few lines
+max_diff_bytes = 16384
+
 # Files matching these patterns show summary only (not full diff)
 # Useful for large generated/vendored files that add noise
 collapse_patterns = [
