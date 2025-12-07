@@ -1,10 +1,10 @@
-# ccc-jj
+# jc
 
 A Jujutsu (jj) auto-committer CLI tool that uses Claude to generate commit messages from diffs.
 
 ## Description
 
-`ccc-jj` is a standalone command-line tool that automatically generates commit messages for your Jujutsu workspace changes using Claude AI. It discovers your jj workspace, extracts diffs, generates appropriate commit messages via the Claude CLI, and creates commits.
+`jc` is a standalone command-line tool that automatically generates commit messages for your Jujutsu workspace changes using Claude AI. It discovers your jj workspace, extracts diffs, generates appropriate commit messages via the Claude CLI, and creates commits.
 
 ## Features
 
@@ -22,18 +22,10 @@ A Jujutsu (jj) auto-committer CLI tool that uses Claude to generate commit messa
 
 ## Installation
 
-### From Source
-
-```bash
-cargo build --release
-```
-
-The binary will be available at `target/release/ccc-jj`.
-
 ### Installing Locally
 
-```bash
-cargo install --path .
+```console
+$ cargo install --git https://github.com/0x6b/ccc-jj
 ```
 
 ## Usage
@@ -43,28 +35,18 @@ cargo install --path .
 Run from within a jj workspace:
 
 ```bash
-ccc-jj
+$ jc --help
+Auto-commit changes in a jj workspace using Claude for commit messages
+
+Usage: jc [OPTIONS]
+
+Options:
+  -p, --path <PATH>          Path to the workspace (defaults to current directory)
+  -l, --language <LANGUAGE>  Language to use for commit messages [env: CCC_JJ_LANGUAGE=] [default: English]
+  -m, --model <MODEL>        Model to use for generating a commit message [env: CCC_JJ_MODEL=] [default: haiku]
+  -h, --help                 Print help
+  -V, --version              Print version
 ```
-
-### With Options
-
-```bash
-# Specify a custom workspace path
-ccc-jj --path /path/to/workspace
-
-# Use a different claude CLI binary
-ccc-jj --claude-path /path/to/claude
-
-# Combine options
-ccc-jj --path /path/to/workspace --claude-path /usr/local/bin/claude
-```
-
-### Command-line Options
-
-- `-p, --path <PATH>`: Path to the workspace (defaults to current directory)
-- `-c, --claude-path <CLAUDE_PATH>`: Path to the claude CLI executable (defaults to "claude")
-- `-h, --help`: Print help information
-- `-V, --version`: Print version information
 
 ## How It Works
 
@@ -75,35 +57,6 @@ ccc-jj --path /path/to/workspace --claude-path /usr/local/bin/claude
 5. Commit Creation: Creates a new commit in jj with the generated message
 
 The tool intelligently prevents duplicate commits by comparing tree IDs - if the working copy tree matches the parent commit's tree, no commit is created. This handles jj's behavior of automatically creating new working-copy commits after each commit.
-
-## Example Workflow
-
-```bash
-# Make changes to files in your jj workspace
-echo "new feature" >> src/main.rs
-
-# Run ccc-jj to auto-commit
-ccc-jj
-```
-
-Output:
-```
-Found workspace at: /Users/yourname/project
-Checking for changes...
-Getting diff...
-Generating commit message using Claude...
-Generated message: feat: add new feature to main module
-Creating commit...
-Committed change abc123def456 with message:
-feat: add new feature to main module
-```
-
-If you run the tool again without making changes:
-```
-Found workspace at: /Users/yourname/project
-Checking for changes...
-No changes to commit (working copy tree matches parent)
-```
 
 ## Configuration
 
@@ -122,6 +75,7 @@ jj config set --user user.email "your.email@example.com"
 ```
 
 The tool also automatically detects:
+
 - `operation.hostname`: Your machine's hostname (via `whoami` crate)
 - `operation.username`: Your username (via `whoami` crate or `$USER` environment variable)
 
@@ -129,49 +83,6 @@ The tool also automatically detects:
 
 The tool uses the Claude CLI's existing configuration. Ensure your Claude CLI is properly configured with API credentials before using this tool.
 
-## Dependencies
-
-This project depends on:
-
-- `jj-lib`: Core Jujutsu library (from git repository)
-- `tokio`: Async runtime
-- `anyhow`: Error handling
-- `clap`: Command-line argument parsing
-- `whoami`: System username and hostname detection
-- `dirs`: Standard directory path resolution
-
-## Development
-
-### Building
-
-```bash
-cargo build
-```
-
-### Running Tests
-
-```bash
-cargo test
-```
-
 ## License
 
-See LICENSE file for details.
-
-## Contributing
-
-Contributions are welcome! Please open an issue or submit a pull request.
-
-## Troubleshooting
-
-### "Failed to load workspace"
-
-Ensure you're running the command from within a jj workspace or specify a valid workspace path with `--path`.
-
-### "jj diff failed"
-
-Make sure the `jj` command is available in your PATH and the workspace is properly initialized.
-
-### "claude CLI failed"
-
-Verify that the Claude CLI is installed and properly configured with your API credentials. Test it by running `claude -p "test"` in your terminal.
+MIT. See [LICENSE](./LICENSE) for details.
