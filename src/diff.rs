@@ -142,7 +142,7 @@ pub async fn get_tree_diff(
             .unwrap_or(false);
 
         let diff_output = match (values.before.as_resolved(), values.after.as_resolved()) {
-            (None, Some(Some(TreeValue::File { id, .. }))) => {
+            (Some(None), Some(Some(TreeValue::File { id, .. }))) => {
                 let content = read_file_content(repo, &entry.path, id).await?;
                 let byte_size = content.len();
                 let line_count = String::from_utf8_lossy(&content).lines().count();
@@ -158,7 +158,7 @@ pub async fn get_tree_diff(
                 }
             }
 
-            (Some(Some(TreeValue::File { id, .. })), None) => {
+            (Some(Some(TreeValue::File { id, .. })), Some(None)) => {
                 let content = read_file_content(repo, &entry.path, id).await?;
                 let byte_size = content.len();
                 let line_count = String::from_utf8_lossy(&content).lines().count();
