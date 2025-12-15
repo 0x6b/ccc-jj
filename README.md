@@ -1,6 +1,6 @@
 # jc
 
-A Jujutsu (jj) auto-committer CLI tool that uses Claude to generate commit messages from diffs.
+A [Jujutsu](https://www.jj-vcs.dev/) (`jj`) auto-committer CLI tool that uses Claude to generate commit messages from diffs.
 
 ## Description
 
