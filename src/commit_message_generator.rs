@@ -34,6 +34,8 @@ struct DiffConfig {
     collapse_patterns: Vec<String>,
     max_diff_lines: usize,
     max_diff_bytes: usize,
+    max_total_diff_lines: usize,
+    max_total_diff_bytes: usize,
 }
 
 /// Get the collapse patterns from config
@@ -49,6 +51,16 @@ pub fn max_diff_lines() -> usize {
 /// Get the max diff bytes threshold from config
 pub fn max_diff_bytes() -> usize {
     CONFIG.diff.max_diff_bytes
+}
+
+/// Get the max total diff lines threshold from config
+pub fn max_total_diff_lines() -> usize {
+    CONFIG.diff.max_total_diff_lines
+}
+
+/// Get the max total diff bytes threshold from config
+pub fn max_total_diff_bytes() -> usize {
+    CONFIG.diff.max_total_diff_bytes
 }
 
 static CONFIG: LazyLock<Config> = LazyLock::new(|| {

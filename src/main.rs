@@ -11,7 +11,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use commit_message_generator::{CommitMessageGenerator, collapse_patterns, max_diff_bytes, max_diff_lines};
+use commit_message_generator::{CommitMessageGenerator, collapse_patterns, max_diff_bytes, max_diff_lines, max_total_diff_bytes, max_total_diff_lines};
 use diff::{build_collapse_matcher, get_tree_diff};
 use gethostname::gethostname;
 use jj_lib::{
@@ -332,6 +332,24 @@ async fn main() -> Result<()> {
         println!("Empty diff, nothing to commit");
         drop(locked_wc);
         return Ok(());
+    }
+
+    // Check total diff size before sending to Claude
+    let diff_lines = diff.lines().count();
+    let diff_bytes = diff.len();
+    let max_lines = max_total_diff_lines();
+    let max_bytes = max_total_diff_bytes();
+
+    if diff_lines > max_lines || diff_bytes > max_bytes {
+        drop(locked_wc);
+        bail!(
+            "Diff too large to generate commit message: {} lines / {} bytes (limits: {} lines / {} bytes). \
+            Consider committing in smaller chunks or using `jj describe` to set the message manually.",
+            diff_lines,
+            diff_bytes,
+            max_lines,
+            max_bytes
+        );
     }
 
     // Drop the lock before calling Claude (external process)
