@@ -238,6 +238,7 @@ async fn create_commit(
     println!("Committed change {} with message:", commit_with_description.id().hex());
     println!("Author: {} <{}>", author.name, author.email);
     println!("{commit_message}");
+    println!("--------------------------------------------------------------------------------");
 
     Ok(())
 }
@@ -355,7 +356,7 @@ async fn main() -> Result<()> {
     // Drop the lock before calling Claude (external process)
     drop(locked_wc);
 
-    // Generate commit message and create commit
+    // Generate a commit message and create commit
     info!(language = %args.language, model = %args.model, "Generating commit message with Claude");
     let generator = CommitMessageGenerator::new(&args.language, &args.model);
     let commit_message = match generator.generate(&diff) {
