@@ -69,7 +69,8 @@ async fn format_added_removed_diff(
         ("deleted file", format!("a/{path_str}"), "/dev/null".to_string())
     };
 
-    let mut output = format!("diff --git a/{path_str} b/{path_str}\n{status}\n--- {from}\n+++ {to}\n");
+    let mut output =
+        format!("diff --git a/{path_str} b/{path_str}\n{status}\n--- {from}\n+++ {to}\n");
     let content = read_file_content(repo, path, id).await?;
 
     match String::from_utf8(content) {
@@ -111,7 +112,13 @@ fn collapse_reason(
 }
 
 /// Format a collapsed summary for files matching collapse patterns or size limits
-fn format_collapsed_summary(path_str: &str, added: usize, removed: usize, status: &str, reason: &str) -> String {
+fn format_collapsed_summary(
+    path_str: &str,
+    added: usize,
+    removed: usize,
+    status: &str,
+    reason: &str,
+) -> String {
     format!(
         "diff --git a/{path_str} b/{path_str}\n{status} (+{added} -{removed} lines, {reason})\n"
     )
@@ -137,20 +144,25 @@ pub async fn get_tree_diff(
         let values = entry.values?;
 
         // Check if this file should be collapsed
-        let should_collapse = collapse_matcher
-            .map(|m| m.is_match(path_str))
-            .unwrap_or(false);
+        let should_collapse = collapse_matcher.map(|m| m.is_match(path_str)).unwrap_or(false);
 
         let diff_output = match (values.before.as_resolved(), values.after.as_resolved()) {
             (Some(None), Some(Some(TreeValue::File { id, .. }))) => {
                 let content = read_file_content(repo, &entry.path, id).await?;
                 let byte_size = content.len();
                 let line_count = String::from_utf8_lossy(&content).lines().count();
-                let should_collapse_size = line_count > max_diff_lines || byte_size > max_diff_bytes;
+                let should_collapse_size =
+                    line_count > max_diff_lines || byte_size > max_diff_bytes;
                 trace!(path = %path_str, collapsed = should_collapse, collapsed_size = should_collapse_size, lines = line_count, bytes = byte_size, "Processing added file");
                 if should_collapse || should_collapse_size {
                     collapsed_count += 1;
-                    let reason = collapse_reason(should_collapse, line_count, byte_size, max_diff_lines, max_diff_bytes);
+                    let reason = collapse_reason(
+                        should_collapse,
+                        line_count,
+                        byte_size,
+                        max_diff_lines,
+                        max_diff_bytes,
+                    );
                     format_collapsed_summary(path_str, line_count, 0, "new file", reason)
                 } else {
                     format_added_removed_diff(repo, &entry.path, path_str, id, true, MAX_LINES)
@@ -162,11 +174,18 @@ pub async fn get_tree_diff(
                 let content = read_file_content(repo, &entry.path, id).await?;
                 let byte_size = content.len();
                 let line_count = String::from_utf8_lossy(&content).lines().count();
-                let should_collapse_size = line_count > max_diff_lines || byte_size > max_diff_bytes;
+                let should_collapse_size =
+                    line_count > max_diff_lines || byte_size > max_diff_bytes;
                 trace!(path = %path_str, collapsed = should_collapse, collapsed_size = should_collapse_size, lines = line_count, bytes = byte_size, "Processing deleted file");
                 if should_collapse || should_collapse_size {
                     collapsed_count += 1;
-                    let reason = collapse_reason(should_collapse, line_count, byte_size, max_diff_lines, max_diff_bytes);
+                    let reason = collapse_reason(
+                        should_collapse,
+                        line_count,
+                        byte_size,
+                        max_diff_lines,
+                        max_diff_bytes,
+                    );
                     format_collapsed_summary(path_str, 0, line_count, "deleted file", reason)
                 } else {
                     format_added_removed_diff(repo, &entry.path, path_str, id, false, MAX_LINES)
@@ -189,14 +208,27 @@ pub async fn get_tree_diff(
                 ) {
                     (Ok(before_text), Ok(after_text)) => {
                         let diff = TextDiff::from_lines(&before_text, &after_text);
-                        let added = diff.iter_all_changes().filter(|c| c.tag() == similar::ChangeTag::Insert).count();
-                        let removed = diff.iter_all_changes().filter(|c| c.tag() == similar::ChangeTag::Delete).count();
+                        let added = diff
+                            .iter_all_changes()
+                            .filter(|c| c.tag() == similar::ChangeTag::Insert)
+                            .count();
+                        let removed = diff
+                            .iter_all_changes()
+                            .filter(|c| c.tag() == similar::ChangeTag::Delete)
+                            .count();
                         let byte_size = before_content.len().max(after_content.len());
-                        let should_collapse_size = added + removed > max_diff_lines || byte_size > max_diff_bytes;
+                        let should_collapse_size =
+                            added + removed > max_diff_lines || byte_size > max_diff_bytes;
                         trace!(path = %path_str, collapsed = should_collapse, collapsed_size = should_collapse_size, lines = added + removed, bytes = byte_size, "Processing modified file");
                         if should_collapse || should_collapse_size {
                             collapsed_count += 1;
-                            let reason = collapse_reason(should_collapse, added + removed, byte_size, max_diff_lines, max_diff_bytes);
+                            let reason = collapse_reason(
+                                should_collapse,
+                                added + removed,
+                                byte_size,
+                                max_diff_lines,
+                                max_diff_bytes,
+                            );
                             format_collapsed_summary(path_str, added, removed, "modified", reason)
                         } else {
                             format!(

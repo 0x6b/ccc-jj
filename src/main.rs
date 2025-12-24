@@ -11,7 +11,10 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use commit_message_generator::{CommitMessageGenerator, collapse_patterns, max_diff_bytes, max_diff_lines, max_total_diff_bytes, max_total_diff_lines};
+use commit_message_generator::{
+    CommitMessageGenerator, collapse_patterns, max_diff_bytes, max_diff_lines,
+    max_total_diff_bytes, max_total_diff_lines,
+};
 use diff::{build_collapse_matcher, get_tree_diff};
 use gethostname::gethostname;
 use jj_lib::{
@@ -325,7 +328,15 @@ async fn main() -> Result<()> {
     // Generate diff for commit message (using jj-lib API, not external command)
     debug!("Generating diff");
     let collapse_matcher = build_collapse_matcher(collapse_patterns());
-    let diff = get_tree_diff(&repo, &parent_tree, &current_tree, collapse_matcher.as_ref(), max_diff_lines(), max_diff_bytes()).await?;
+    let diff = get_tree_diff(
+        &repo,
+        &parent_tree,
+        &current_tree,
+        collapse_matcher.as_ref(),
+        max_diff_lines(),
+        max_diff_bytes(),
+    )
+    .await?;
     debug!(diff_len = diff.len(), "Diff generated");
     trace!(diff = %diff, "Full diff content");
 
@@ -344,12 +355,8 @@ async fn main() -> Result<()> {
     if diff_lines > max_lines || diff_bytes > max_bytes {
         drop(locked_wc);
         bail!(
-            "Diff too large to generate commit message: {} lines / {} bytes (limits: {} lines / {} bytes). \
-            Consider committing in smaller chunks or using `jj describe` to set the message manually.",
-            diff_lines,
-            diff_bytes,
-            max_lines,
-            max_bytes
+            "Diff too large to generate commit message: {diff_lines} lines / {diff_bytes} bytes (limits: {max_lines} lines / {max_bytes} bytes). \
+            Consider committing in smaller chunks or using `jj describe` to set the message manually."
         );
     }
 
