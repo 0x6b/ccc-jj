@@ -1,6 +1,7 @@
-use std::fmt::Write;
+use std::fmt::{self, Display, Write};
 
 use anyhow::Result;
+use fmt::Formatter;
 use futures::StreamExt;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use jj_lib::{
@@ -12,6 +13,29 @@ use jj_lib::{
 use similar::TextDiff;
 use tokio::{io::AsyncReadExt, try_join};
 use tracing::{debug, trace, warn};
+
+/// Summary of file changes between two trees
+#[derive(Debug, Default)]
+pub struct FileChangeSummary {
+    pub added: Vec<String>,
+    pub deleted: Vec<String>,
+    pub modified: Vec<String>,
+}
+
+impl Display for FileChangeSummary {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        for file in &self.added {
+            writeln!(f, " A {file}")?;
+        }
+        for file in &self.deleted {
+            writeln!(f, " D {file}")?;
+        }
+        for file in &self.modified {
+            writeln!(f, " M {file}")?;
+        }
+        Ok(())
+    }
+}
 
 const MAX_LINES: usize = 50;
 const CONTEXT_LINES: usize = 2;
@@ -257,4 +281,39 @@ pub async fn get_tree_diff(
 
     debug!(file_count, collapsed_count, output_len = output.len(), "Tree diff complete");
     Ok(output)
+}
+
+/// Get summary of file changes between two trees
+pub async fn get_file_change_summary(
+    from_tree: &MergedTree,
+    to_tree: &MergedTree,
+) -> FileChangeSummary {
+    let mut summary = FileChangeSummary::default();
+    let mut stream = from_tree.diff_stream(to_tree, &jj_lib::matchers::EverythingMatcher);
+
+    while let Some(entry) = stream.next().await {
+        let path_str = entry.path.as_internal_file_string().to_string();
+        let values = match entry.values {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        match (values.before.as_resolved(), values.after.as_resolved()) {
+            // Added: before is None, after is Some
+            (Some(None), Some(Some(TreeValue::File { .. }))) => {
+                summary.added.push(path_str);
+            }
+            // Deleted: before is Some, after is None
+            (Some(Some(TreeValue::File { .. })), Some(None)) => {
+                summary.deleted.push(path_str);
+            }
+            // Modified: both before and after are Some
+            (Some(Some(TreeValue::File { .. })), Some(Some(TreeValue::File { .. }))) => {
+                summary.modified.push(path_str);
+            }
+            _ => {}
+        }
+    }
+
+    summary
 }

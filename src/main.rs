@@ -15,7 +15,7 @@ use commit_message_generator::{
     CommitMessageGenerator, collapse_patterns, max_diff_bytes, max_diff_lines,
     max_total_diff_bytes, max_total_diff_lines,
 };
-use diff::{build_collapse_matcher, get_tree_diff};
+use diff::{FileChangeSummary, build_collapse_matcher, get_file_change_summary, get_tree_diff};
 use gethostname::gethostname;
 use jj_lib::{
     config::{ConfigLayer, ConfigResolutionContext, ConfigSource, StackedConfig, resolve},
@@ -201,6 +201,7 @@ async fn create_commit(
     workspace: &Workspace,
     commit_message: &str,
     tree: MergedTree,
+    file_changes: &FileChangeSummary,
 ) -> Result<()> {
     let repo = workspace.repo_loader().load_at_head()?;
 
@@ -238,10 +239,33 @@ async fn create_commit(
     locked_wc.finish(new_repo.operation().id().clone()).await?;
 
     let author = commit_with_description.author();
-    println!("Committed change {} with message:", commit_with_description.id().hex());
-    println!("Author: {} <{}>", author.name, author.email);
-    println!("{commit_message}");
-    println!("--------------------------------------------------------------------------------");
+    println!(
+        "Committed change {} by {} <{}>",
+        commit_with_description.id().hex(),
+        author.name,
+        author.email
+    );
+
+    // Collect all lines for the box
+    let mut lines: Vec<&str> = vec![];
+    for line in commit_message.lines() {
+        lines.push(line);
+    }
+
+    // Calculate box width based on content
+    let content_width = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let box_width = content_width.max(40); // minimum width of 40
+
+    // Print the box
+    println!("╭{}╮", "─".repeat(box_width + 2));
+    for line in &lines {
+        let padding = box_width - line.chars().count();
+        println!("│ {line}{} │", " ".repeat(padding));
+    }
+    println!("╰{}╯", "─".repeat(box_width + 2));
+
+    // Print file changes below the box
+    print!("{file_changes}");
 
     Ok(())
 }
@@ -374,8 +398,11 @@ async fn main() -> Result<()> {
     };
     debug!(commit_message = %commit_message, "Generated commit message");
 
+    // Get file change summary for display
+    let file_changes = get_file_change_summary(&parent_tree, &current_tree).await;
+
     info!("Creating commit");
-    create_commit(&workspace, &commit_message, current_tree).await?;
+    create_commit(&workspace, &commit_message, current_tree, &file_changes).await?;
     info!("Commit created successfully");
 
     Ok(())
