@@ -8,7 +8,9 @@ use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
 use serde::Deserialize;
 use toml::from_str;
-use tracing::{debug, trace, warn};
+use tracing::{debug, error, trace, warn};
+
+use crate::text_formatter::format_text;
 
 #[derive(Deserialize)]
 struct Config {
@@ -111,13 +113,14 @@ impl CommitMessageGenerator {
         debug!(diff_len = diff_content.len(), "Starting commit message generation");
         self.try_generate(diff_content).map(|message| {
             let first_line = message.lines().next().unwrap_or("").trim();
-            if CONVENTIONAL_COMMIT_RE.is_match(first_line) {
+            let message = if CONVENTIONAL_COMMIT_RE.is_match(first_line) {
                 debug!("Generated message follows conventional commit format");
                 message
             } else {
-                warn!(first_line = %first_line, "Generated message does not follow conventional commit format, prepending default");
+                error!(first_line = %first_line, "Generated message does not follow conventional commit format, prepending default");
                 format!("{}\n\n{message}", CONFIG.generator.default_commit_message)
-            }
+            };
+            format_text(&message, 72)
         })
     }
 
