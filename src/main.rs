@@ -28,11 +28,11 @@ use jj_lib::{
     working_copy::SnapshotOptions,
     workspace::{Workspace, default_working_copy_factories},
 };
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 use tracing_subscriber::fmt;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Auto-commit changes in a jj workspace using Claude for commit messages", long_about = None)]
+#[command(about, version)]
 struct Args {
     /// Path to the workspace (defaults to current directory)
     #[arg(short, long)]
@@ -345,7 +345,7 @@ async fn main() -> Result<()> {
 
     // If working copy commit already has a description, don't overwrite it
     if !wc_commit.description().is_empty() {
-        info!(description = %wc_commit.description(), "Working copy already has description, skipping");
+        warn!(description = %wc_commit.description(), "Working copy already has description, skipping");
         drop(locked_wc);
         return Ok(());
     }
