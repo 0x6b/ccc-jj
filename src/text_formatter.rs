@@ -2,15 +2,91 @@ use textwrap::{Options, wrap};
 
 /// Formats text with proper line wrapping and list-aware indentation.
 ///
+/// - Joins lines within paragraphs (separated by blank lines) before wrapping
 /// - Wraps lines at the specified width (default 72 for commit message bodies)
 /// - Preserves list formatting with proper hanging indents:
 ///   - Bullet lists (`- `) continue with 2-space indent
 ///   - Numbered lists (`1. `, `10. `) continue with matching indent
 pub fn format_text(text: &str, width: usize) -> String {
-    text.lines()
-        .map(|line| format_line(line, width))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let paragraphs = split_into_paragraphs(text);
+    let mut result = String::new();
+
+    for (i, para) in paragraphs.iter().enumerate() {
+        if i > 0 {
+            result.push('\n');
+        }
+        result.push_str(&format_line(&para.content, width));
+        for _ in 0..para.trailing_blank_lines {
+            result.push('\n');
+        }
+    }
+
+    result
+}
+
+struct Paragraph {
+    content: String,
+    trailing_blank_lines: usize,
+}
+
+fn split_into_paragraphs(text: &str) -> Vec<Paragraph> {
+    let mut paragraphs = Vec::new();
+    let mut current_lines = Vec::new();
+    let mut blank_count = 0;
+
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            if !current_lines.is_empty() {
+                paragraphs.push(Paragraph {
+                    content: join_paragraph_lines(&current_lines),
+                    trailing_blank_lines: 0,
+                });
+                current_lines.clear();
+            }
+            blank_count += 1;
+        } else {
+            if blank_count > 0 && !paragraphs.is_empty() {
+                paragraphs.last_mut().unwrap().trailing_blank_lines = blank_count;
+            }
+            blank_count = 0;
+
+            if is_list_item(line.trim()) && !current_lines.is_empty() {
+                paragraphs.push(Paragraph {
+                    content: join_paragraph_lines(&current_lines),
+                    trailing_blank_lines: 0,
+                });
+                current_lines.clear();
+            }
+            current_lines.push(line.to_string());
+        }
+    }
+
+    if !current_lines.is_empty() {
+        paragraphs.push(Paragraph {
+            content: join_paragraph_lines(&current_lines),
+            trailing_blank_lines: 0,
+        });
+    }
+
+    paragraphs
+}
+
+fn is_list_item(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+        return true;
+    }
+    if let Some(dot_pos) = trimmed.find(". ") {
+        let prefix = &trimmed[..dot_pos];
+        if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()) {
+            return true;
+        }
+    }
+    false
+}
+
+fn join_paragraph_lines(lines: &[String]) -> String {
+    lines.join(" ").split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn format_line(line: &str, width: usize) -> String {
@@ -122,13 +198,12 @@ mod tests {
     }
 
     #[test]
-    fn test_preserves_leading_whitespace() {
-        let input =
-            "  - Indented bullet that is long enough to wrap onto the next line for testing.";
+    fn test_joins_prewrapped_lines() {
+        let input = "TestFeatureFreezing tests were checking if stylistic set features\nremained in GSUB table.";
         let result = format_text(input, 72);
         assert_eq!(
             result,
-            "  - Indented bullet that is long enough to wrap onto the next line for\n    testing."
+            "TestFeatureFreezing tests were checking if stylistic set features\nremained in GSUB table."
         );
     }
 

@@ -68,7 +68,7 @@ Guidelines:
     - Do NOT include scope or component in parentheses
     - Prioritize: feat > fix > refactor > others
     - If multiple types, choose the most significant one
-- Body: 72 characters per line max, explain WHAT and WHY (not how)
+- Body: explain WHAT and WHY (not how), do NOT wrap lines
     - Include body only if explanation adds value beyond the title
     - Use bullet points for multiple changes or breaking changes
     - For breaking changes, explain migration path in footer with "BREAKING CHANGE:" prefix
