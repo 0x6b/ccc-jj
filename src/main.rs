@@ -1,5 +1,6 @@
 mod commit_message_generator;
 mod diff;
+mod text_formatter;
 
 use std::{
     env,
