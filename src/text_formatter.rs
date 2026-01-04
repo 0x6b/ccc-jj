@@ -15,7 +15,12 @@ pub fn format_text(text: &str, width: usize) -> String {
         if i > 0 {
             result.push('\n');
         }
-        result.push_str(&format_line(&para.content, width));
+        // Don't wrap the first paragraph (commit title)
+        if i == 0 {
+            result.push_str(&para.content);
+        } else {
+            result.push_str(&format_line(&para.content, width));
+        }
         for _ in 0..para.trailing_blank_lines {
             result.push('\n');
         }
@@ -149,61 +154,61 @@ mod tests {
 
     #[test]
     fn test_simple_text_wrap() {
-        let input = "This is a very long line that should be wrapped because it exceeds the maximum width limit.";
+        let input = "Title\n\nThis is a very long line that should be wrapped because it exceeds the maximum width limit.";
         let result = format_text(input, 72);
         assert_eq!(
             result,
-            "This is a very long line that should be wrapped because it exceeds the\nmaximum width limit."
+            "Title\n\nThis is a very long line that should be wrapped because it exceeds the\nmaximum width limit."
         );
     }
 
     #[test]
     fn test_bullet_list_wrap() {
-        let input = "- Survivals. Every counter with two or three neighboring counters survives for the next generation.";
+        let input = "Title\n\n- Survivals. Every counter with two or three neighboring counters survives for the next generation.";
         let result = format_text(input, 72);
         assert_eq!(
             result,
-            "- Survivals. Every counter with two or three neighboring counters\n  survives for the next generation."
+            "Title\n\n- Survivals. Every counter with two or three neighboring counters\n  survives for the next generation."
         );
     }
 
     #[test]
     fn test_bullet_list_asterisk_wrap() {
-        let input = "* Survivals. Every counter with two or three neighboring counters survives for the next generation.";
+        let input = "Title\n\n* Survivals. Every counter with two or three neighboring counters survives for the next generation.";
         let result = format_text(input, 72);
         assert_eq!(
             result,
-            "* Survivals. Every counter with two or three neighboring counters\n  survives for the next generation."
+            "Title\n\n* Survivals. Every counter with two or three neighboring counters\n  survives for the next generation."
         );
     }
 
     #[test]
     fn test_numbered_list_single_digit_wrap() {
-        let input = "1. Survivals. Every counter with two or three neighboring counters survives for the next generation.";
+        let input = "Title\n\n1. Survivals. Every counter with two or three neighboring counters survives for the next generation.";
         let result = format_text(input, 72);
         assert_eq!(
             result,
-            "1. Survivals. Every counter with two or three neighboring counters\n   survives for the next generation."
+            "Title\n\n1. Survivals. Every counter with two or three neighboring counters\n   survives for the next generation."
         );
     }
 
     #[test]
     fn test_numbered_list_double_digit_wrap() {
-        let input = "10. Survivals. Every counter with two or three neighboring counters survives for the next generation.";
+        let input = "Title\n\n10. Survivals. Every counter with two or three neighboring counters survives for the next generation.";
         let result = format_text(input, 72);
         assert_eq!(
             result,
-            "10. Survivals. Every counter with two or three neighboring counters\n    survives for the next generation."
+            "Title\n\n10. Survivals. Every counter with two or three neighboring counters\n    survives for the next generation."
         );
     }
 
     #[test]
     fn test_joins_prewrapped_lines() {
-        let input = "TestFeatureFreezing tests were checking if stylistic set features\nremained in GSUB table.";
+        let input = "Title\n\nTestFeatureFreezing tests were checking if stylistic set features\nremained in GSUB table.";
         let result = format_text(input, 72);
         assert_eq!(
             result,
-            "TestFeatureFreezing tests were checking if stylistic set features\nremained in GSUB table."
+            "Title\n\nTestFeatureFreezing tests were checking if stylistic set features\nremained in GSUB table."
         );
     }
 
@@ -226,6 +231,14 @@ mod tests {
     }
 
     #[test]
+    fn test_title_not_wrapped() {
+        let input = "feat: this is a very long commit title that exceeds 72 characters and should not be wrapped at all\n\nBody text that should be wrapped when it exceeds the maximum width limit.";
+        let result = format_text(input, 72);
+        let expected = "feat: this is a very long commit title that exceeds 72 characters and should not be wrapped at all\n\nBody text that should be wrapped when it exceeds the maximum width\nlimit.";
+        assert_eq!(result, expected);
+    }
+
+    #[test]
     fn test_empty_lines_preserved() {
         let input = "Line one.\n\n\nLine after two empty lines.";
         let result = format_text(input, 72);
@@ -244,12 +257,12 @@ mod tests {
 
     #[test]
     fn test_sentence_not_starting_with_number_but_containing_period() {
-        let input = "Version 2.0 introduces many changes that span across multiple components and require careful review.";
+        let input = "Title\n\nVersion 2.0 introduces many changes that span across multiple components and require careful review.";
         let result = format_text(input, 72);
         // Should NOT be treated as a numbered list
         assert_eq!(
             result,
-            "Version 2.0 introduces many changes that span across multiple components\nand require careful review."
+            "Title\n\nVersion 2.0 introduces many changes that span across multiple components\nand require careful review."
         );
     }
 }
