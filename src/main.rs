@@ -12,14 +12,14 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
+use colored::Colorize;
 use commit_message_generator::{
     CommitMessageGenerator, collapse_patterns, max_diff_bytes, max_diff_lines,
     max_total_diff_bytes, max_total_diff_lines,
 };
-use colored::Colorize;
+use console::strip_ansi_codes;
 use diff::{FileChangeSummary, build_collapse_matcher, get_file_change_summary, get_tree_diff};
 use gethostname::gethostname;
-use unicode_width::UnicodeWidthStr;
 use jj_lib::{
     config::{ConfigLayer, ConfigResolutionContext, ConfigSource, StackedConfig, resolve},
     gitignore::GitIgnoreFile,
@@ -32,6 +32,7 @@ use jj_lib::{
 };
 use tracing::{debug, info, trace, warn};
 use tracing_subscriber::fmt;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Parser, Debug)]
 #[command(about, version)]
@@ -253,10 +254,10 @@ async fn create_commit(
     );
 
     // Print the box with title in top border
-    print!("{}", format_box_with_title(&title, &commit_message, 72));
+    print!("{}", format_box_with_title(&title, commit_message, 72));
 
     // Print file changes below the box (indented to align with box content)
-    print_file_changes(&file_changes);
+    print_file_changes(file_changes);
 
     Ok(())
 }
@@ -402,7 +403,7 @@ async fn main() -> Result<()> {
 /// Formats text content inside a box with a title in the top border (with colors).
 fn format_box_with_title(title: &str, content: &str, width: usize) -> String {
     let lines: Vec<&str> = content.lines().collect();
-    let title_width = console::strip_ansi_codes(title).width();
+    let title_width = strip_ansi_codes(title).width();
 
     let mut result = String::new();
 
@@ -410,9 +411,8 @@ fn format_box_with_title(title: &str, content: &str, width: usize) -> String {
     let remaining = width + 2 - title_width - 1; // -1 for the leading ─
     let border = "─".repeat(remaining.max(0));
     result.push_str(&format!(
-        "{}{}{}{}\n",
+        "{}{title}{}{}\n",
         "╭─".white().dimmed(),
-        title,
         border.white().dimmed(),
         "╮".white().dimmed()
     ));
@@ -422,19 +422,13 @@ fn format_box_with_title(title: &str, content: &str, width: usize) -> String {
         if line_width <= width {
             let padding = width - line_width;
             result.push_str(&format!(
-                "{} {}{} {}\n",
+                "{} {line}{} {}\n",
                 "│".white().dimmed(),
-                line,
                 " ".repeat(padding),
                 "│".white().dimmed()
             ));
         } else {
-            result.push_str(&format!(
-                "{} {} {}\n",
-                "│".white().dimmed(),
-                line,
-                "│".white().dimmed()
-            ));
+            result.push_str(&format!("{} {line} {}\n", "│".white().dimmed(), "│".white().dimmed()));
         }
     }
     result.push_str(&format!(
