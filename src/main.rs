@@ -243,18 +243,20 @@ async fn create_commit(
     let author = commit_with_description.author();
     let commit_id = commit_with_description.id().hex();
     let short_id = &commit_id[..8.min(commit_id.len())];
-    println!(
+    let title = format!(
         "Committed change {} by {} <{}>",
         short_id,
         author.name,
         author.email
     );
 
-    // Print the box (width matches text wrap width)
-    print!("{}", format_box(&commit_message, 72));
+    // Print the box with title in top border
+    print!("{}", format_box_with_title(&title, &commit_message, 72));
 
-    // Print file changes below the box
-    print!("{file_changes}");
+    // Print file changes below the box (indented to align with box content)
+    for line in file_changes.to_string().lines() {
+        println!(" {line}");
+    }
 
     Ok(())
 }
@@ -397,19 +399,24 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Formats text content inside a box with Unicode-aware width calculation.
-fn format_box(content: &str, width: usize) -> String {
+/// Formats text content inside a box with a title in the top border.
+fn format_box_with_title(title: &str, content: &str, width: usize) -> String {
     let lines: Vec<&str> = content.lines().collect();
+    let title_width = title.width();
 
     let mut result = String::new();
-    result.push_str(&format!("╭{}╮\n", "─".repeat(width + 2)));
+
+    // Top border with title: ╭─Title───...───╮
+    let remaining = width + 2 - title_width - 1; // -1 for the leading ─
+    result.push_str(&format!("╭─{title}{}╮\n", "─".repeat(remaining.max(0))));
+
     for line in &lines {
         let line_width = line.width();
         if line_width <= width {
             let padding = width - line_width;
             result.push_str(&format!("│ {line}{} │\n", " ".repeat(padding)));
         } else {
-            result.push_str(&format!("│ {line} │\n", ));
+            result.push_str(&format!("│ {line} │\n"));
         }
     }
     result.push_str(&format!("╰{}╯\n", "─".repeat(width + 2)));
@@ -421,8 +428,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_format_box_ascii() {
-        let result = format_box("Hello", 72);
+    fn test_format_box_with_title_ascii() {
+        let result = format_box_with_title("Title", "Hello", 72);
+        assert!(result.contains("╭─Title"));
         assert!(result.contains("│ Hello"));
         // All lines should have same width (72 + 4 for borders and spaces)
         let line_widths: Vec<usize> = result.lines().map(|l| l.width()).collect();
@@ -430,35 +438,32 @@ mod tests {
     }
 
     #[test]
-    fn test_format_box_japanese() {
-        // "こんにちは" = 5 chars, but width = 10
-        let result = format_box("こんにちは", 72);
+    fn test_format_box_with_title_japanese() {
+        let result = format_box_with_title("コミット", "こんにちは", 72);
         let line_widths: Vec<usize> = result.lines().map(|l| l.width()).collect();
         // All lines should have same display width
         assert!(line_widths.iter().all(|&w| w == 76));
     }
 
     #[test]
-    fn test_format_box_mixed() {
-        // Mixed ASCII and Japanese
-        let result = format_box("Hello こんにちは World", 72);
+    fn test_format_box_with_title_mixed() {
+        let result = format_box_with_title("Commit by 太郎", "Hello こんにちは World", 72);
         let line_widths: Vec<usize> = result.lines().map(|l| l.width()).collect();
         assert!(line_widths.iter().all(|&w| w == 76));
     }
 
     #[test]
-    fn test_format_box_multiline_japanese() {
+    fn test_format_box_with_title_multiline() {
         let content = "タイトル\n\nこれは日本語のテストです";
-        let result = format_box(content, 72);
+        let result = format_box_with_title("Committed change a05fdfa2", content, 72);
         let line_widths: Vec<usize> = result.lines().map(|l| l.width()).collect();
         // All lines should have same display width
         assert!(line_widths.iter().all(|&w| w == 76));
     }
 
     #[test]
-    fn test_format_box_fixed_width() {
-        // Box width should always be the specified width
-        let result = format_box("Short", 72);
+    fn test_format_box_with_title_fixed_width() {
+        let result = format_box_with_title("Title", "Short", 72);
         let first_line = result.lines().next().unwrap();
         // width=72, plus 4 for borders and spaces = 76
         assert_eq!(first_line.width(), 76);
