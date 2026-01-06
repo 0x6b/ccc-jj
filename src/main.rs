@@ -241,9 +241,11 @@ async fn create_commit(
     locked_wc.finish(new_repo.operation().id().clone()).await?;
 
     let author = commit_with_description.author();
+    let commit_id = commit_with_description.id().hex();
+    let short_id = &commit_id[..8.min(commit_id.len())];
     println!(
         "Committed change {} by {} <{}>",
-        commit_with_description.id().hex(),
+        short_id,
         author.name,
         author.email
     );
