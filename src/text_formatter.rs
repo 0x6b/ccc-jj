@@ -265,4 +265,17 @@ mod tests {
             "Title\n\nVersion 2.0 introduces many changes that span across multiple components\nand require careful review."
         );
     }
+
+    #[test]
+    fn test_japanese_wrap() {
+        // 全角文字は幅2としてカウントされるべき
+        // "あいうえおかきくけこ" = 10文字 = 幅20
+        let input = "Title\n\nあいうえおかきくけこさしすせそ";
+        let result = format_text(input, 20);
+        // 幅20なので、10文字（幅20）で折り返されるはず
+        assert!(result.contains('\n'));
+        let lines: Vec<&str> = result.lines().collect();
+        assert_eq!(lines[2], "あいうえおかきくけこ");
+        assert_eq!(lines[3], "さしすせそ");
+    }
 }

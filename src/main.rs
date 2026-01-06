@@ -18,6 +18,7 @@ use commit_message_generator::{
 };
 use diff::{FileChangeSummary, build_collapse_matcher, get_file_change_summary, get_tree_diff};
 use gethostname::gethostname;
+use unicode_width::UnicodeWidthStr;
 use jj_lib::{
     config::{ConfigLayer, ConfigResolutionContext, ConfigSource, StackedConfig, resolve},
     gitignore::GitIgnoreFile,
@@ -247,23 +248,8 @@ async fn create_commit(
         author.email
     );
 
-    // Collect all lines for the box
-    let mut lines: Vec<&str> = vec![];
-    for line in commit_message.lines() {
-        lines.push(line);
-    }
-
-    // Calculate box width based on content
-    let content_width = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
-    let box_width = content_width.max(40); // minimum width of 40
-
-    // Print the box
-    println!("╭{}╮", "─".repeat(box_width + 2));
-    for line in &lines {
-        let padding = box_width - line.chars().count();
-        println!("│ {line}{} │", " ".repeat(padding));
-    }
-    println!("╰{}╯", "─".repeat(box_width + 2));
+    // Print the box (width matches text wrap width)
+    print!("{}", format_box(&commit_message, 72));
 
     // Print file changes below the box
     print!("{file_changes}");
@@ -407,4 +393,72 @@ async fn main() -> Result<()> {
     info!("Commit created successfully");
 
     Ok(())
+}
+
+/// Formats text content inside a box with Unicode-aware width calculation.
+fn format_box(content: &str, width: usize) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+
+    let mut result = String::new();
+    result.push_str(&format!("╭{}╮\n", "─".repeat(width + 2)));
+    for line in &lines {
+        let line_width = line.width();
+        if line_width <= width {
+            let padding = width - line_width;
+            result.push_str(&format!("│ {line}{} │\n", " ".repeat(padding)));
+        } else {
+            result.push_str(&format!("│ {line} │\n", ));
+        }
+    }
+    result.push_str(&format!("╰{}╯\n", "─".repeat(width + 2)));
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_box_ascii() {
+        let result = format_box("Hello", 72);
+        assert!(result.contains("│ Hello"));
+        // All lines should have same width (72 + 4 for borders and spaces)
+        let line_widths: Vec<usize> = result.lines().map(|l| l.width()).collect();
+        assert!(line_widths.iter().all(|&w| w == 76));
+    }
+
+    #[test]
+    fn test_format_box_japanese() {
+        // "こんにちは" = 5 chars, but width = 10
+        let result = format_box("こんにちは", 72);
+        let line_widths: Vec<usize> = result.lines().map(|l| l.width()).collect();
+        // All lines should have same display width
+        assert!(line_widths.iter().all(|&w| w == 76));
+    }
+
+    #[test]
+    fn test_format_box_mixed() {
+        // Mixed ASCII and Japanese
+        let result = format_box("Hello こんにちは World", 72);
+        let line_widths: Vec<usize> = result.lines().map(|l| l.width()).collect();
+        assert!(line_widths.iter().all(|&w| w == 76));
+    }
+
+    #[test]
+    fn test_format_box_multiline_japanese() {
+        let content = "タイトル\n\nこれは日本語のテストです";
+        let result = format_box(content, 72);
+        let line_widths: Vec<usize> = result.lines().map(|l| l.width()).collect();
+        // All lines should have same display width
+        assert!(line_widths.iter().all(|&w| w == 76));
+    }
+
+    #[test]
+    fn test_format_box_fixed_width() {
+        // Box width should always be the specified width
+        let result = format_box("Short", 72);
+        let first_line = result.lines().next().unwrap();
+        // width=72, plus 4 for borders and spaces = 76
+        assert_eq!(first_line.width(), 76);
+    }
 }
