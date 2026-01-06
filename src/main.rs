@@ -443,13 +443,13 @@ fn format_box_with_title(title: &str, content: &str, width: usize) -> String {
 /// Prints file changes with colored status indicators.
 fn print_file_changes(changes: &FileChangeSummary) {
     for file in &changes.added {
-        println!("  {} {file}", "A".green());
+        println!("  {} {}", "A".green().dimmed(), file.dimmed());
     }
     for file in &changes.deleted {
-        println!("  {} {file}", "D".red());
+        println!("  {} {}", "D".red().dimmed(), file.dimmed());
     }
     for file in &changes.modified {
-        println!("  {} {file}", "M".yellow());
+        println!("  {} {}", "M".yellow().dimmed(), file.dimmed());
     }
 }
 
