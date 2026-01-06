@@ -26,6 +26,8 @@ tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 textwrap = "0.16"
 unicode-width = "0.2.2"
+colored = "3.0.0"
+console = "0.16.2"
 
 [profile.release]
 lto = true

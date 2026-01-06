@@ -16,6 +16,7 @@ use commit_message_generator::{
     CommitMessageGenerator, collapse_patterns, max_diff_bytes, max_diff_lines,
     max_total_diff_bytes, max_total_diff_lines,
 };
+use colored::Colorize;
 use diff::{FileChangeSummary, build_collapse_matcher, get_file_change_summary, get_tree_diff};
 use gethostname::gethostname;
 use unicode_width::UnicodeWidthStr;
@@ -244,19 +245,18 @@ async fn create_commit(
     let commit_id = commit_with_description.id().hex();
     let short_id = &commit_id[..8.min(commit_id.len())];
     let title = format!(
-        "Committed change {} by {} <{}>",
-        short_id,
-        author.name,
-        author.email
+        "{}{} {} {}",
+        "Committed change ".white().dimmed(),
+        short_id.blue().dimmed(),
+        "by".white().dimmed(),
+        format!("{} <{}>", author.name, author.email).white().dimmed()
     );
 
     // Print the box with title in top border
     print!("{}", format_box_with_title(&title, &commit_message, 72));
 
     // Print file changes below the box (indented to align with box content)
-    for line in file_changes.to_string().lines() {
-        println!(" {line}");
-    }
+    print_file_changes(&file_changes);
 
     Ok(())
 }
@@ -399,28 +399,64 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Formats text content inside a box with a title in the top border.
+/// Formats text content inside a box with a title in the top border (with colors).
 fn format_box_with_title(title: &str, content: &str, width: usize) -> String {
     let lines: Vec<&str> = content.lines().collect();
-    let title_width = title.width();
+    let title_width = console::strip_ansi_codes(title).width();
 
     let mut result = String::new();
 
     // Top border with title: ╭─Title───...───╮
     let remaining = width + 2 - title_width - 1; // -1 for the leading ─
-    result.push_str(&format!("╭─{title}{}╮\n", "─".repeat(remaining.max(0))));
+    let border = "─".repeat(remaining.max(0));
+    result.push_str(&format!(
+        "{}{}{}{}\n",
+        "╭─".white().dimmed(),
+        title,
+        border.white().dimmed(),
+        "╮".white().dimmed()
+    ));
 
     for line in &lines {
         let line_width = line.width();
         if line_width <= width {
             let padding = width - line_width;
-            result.push_str(&format!("│ {line}{} │\n", " ".repeat(padding)));
+            result.push_str(&format!(
+                "{} {}{} {}\n",
+                "│".white().dimmed(),
+                line,
+                " ".repeat(padding),
+                "│".white().dimmed()
+            ));
         } else {
-            result.push_str(&format!("│ {line} │\n"));
+            result.push_str(&format!(
+                "{} {} {}\n",
+                "│".white().dimmed(),
+                line,
+                "│".white().dimmed()
+            ));
         }
     }
-    result.push_str(&format!("╰{}╯\n", "─".repeat(width + 2)));
+    result.push_str(&format!(
+        "{}{}{}\n",
+        "╰".white().dimmed(),
+        "─".repeat(width + 2).white().dimmed(),
+        "╯".white().dimmed()
+    ));
     result
+}
+
+/// Prints file changes with colored status indicators.
+fn print_file_changes(changes: &FileChangeSummary) {
+    for file in &changes.added {
+        println!("  {} {file}", "A".green());
+    }
+    for file in &changes.deleted {
+        println!("  {} {file}", "D".red());
+    }
+    for file in &changes.modified {
+        println!("  {} {file}", "M".yellow());
+    }
 }
 
 #[cfg(test)]
