@@ -7,6 +7,7 @@ use std::{
 use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
 use serde::Deserialize;
+use serde_json::Value;
 use toml::from_str;
 use tracing::{debug, error, trace, warn};
 
@@ -74,6 +75,8 @@ static CONVENTIONAL_COMMIT_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[a-z]+(?:\([^)]+\))?(?:!)?:\s.+")
         .expect("Failed to compile conventional commit regex")
 });
+
+const JSON_SCHEMA: &str = r#"{"type":"object","properties":{"title":{"type":"string","description":"Commit title in conventional commit format, max 50 chars"},"body":{"type":"string","description":"Optional commit body explaining what and why"}},"required":["title"]}"#;
 
 /// Generates commit messages using Claude CLI based on diff content
 pub struct CommitMessageGenerator {
@@ -154,6 +157,8 @@ impl CommitMessageGenerator {
             .args(&self.args)
             .arg("--model")
             .arg(&self.model)
+            .arg("--json-schema")
+            .arg(JSON_SCHEMA)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -179,13 +184,54 @@ impl CommitMessageGenerator {
                     warn!(status = %output.status, stderr = %stderr, "Claude CLI failed");
                     None
                 } else {
-                    let message = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    if message.is_empty() {
-                        warn!("Claude CLI returned empty output");
-                        None
-                    } else {
-                        trace!(message = %message, "Claude CLI output");
-                        Some(message)
+                    let raw_output = String::from_utf8_lossy(&output.stdout);
+                    trace!(raw_output = %raw_output, "Claude CLI raw output");
+
+                    match serde_json::from_str::<Value>(&raw_output) {
+                        Ok(json) => {
+                            let structured = if let Some(arr) = json.as_array() {
+                                arr.iter()
+                                    .rfind(|obj| {
+                                        obj.get("type").and_then(|v| v.as_str()) == Some("result")
+                                    })
+                                    .and_then(|obj| obj.get("structured_output"))
+                            } else {
+                                json.get("structured_output")
+                            };
+
+                            if let Some(structured) = structured {
+                                let title = structured
+                                    .get("title")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .trim();
+                                let body = structured
+                                    .get("body")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .trim();
+
+                                if title.is_empty() {
+                                    warn!("Claude CLI returned empty title");
+                                    None
+                                } else {
+                                    let message = if body.is_empty() {
+                                        title.to_string()
+                                    } else {
+                                        format!("{title}\n\n{body}")
+                                    };
+                                    trace!(message = %message, "Claude CLI output");
+                                    Some(message)
+                                }
+                            } else {
+                                warn!("Claude CLI JSON missing 'structured_output' field");
+                                None
+                            }
+                        }
+                        Err(e) => {
+                            warn!(error = %e, raw = %raw_output, "Failed to parse Claude CLI JSON output");
+                            None
+                        }
                     }
                 }
             }
