@@ -2,7 +2,7 @@
 # Claude CLI configuration for commit message generation
 command = "claude"
 # Claude CLI arguments - using headless mode with system prompt
-args = ["-p", "--output-format", "text"]
+args = ["-p", "--output-format", "text", "--no-session-persistence"]
 # Fallback message if generation fails
 default_commit_message = "chore: update changes"
 
