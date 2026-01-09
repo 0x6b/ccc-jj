@@ -5,8 +5,7 @@ mod text_formatter;
 
 use std::{
     collections::HashMap,
-    env,
-    env::var,
+    env::{current_dir, var},
     path::{Path, PathBuf},
     process::Command,
     sync::Arc,
@@ -29,6 +28,7 @@ use jj_lib::{
     commit::Commit,
     config::{ConfigLayer, ConfigResolutionContext, ConfigSource, StackedConfig, resolve},
     dsl_util::AliasesMap,
+    git::export_refs,
     gitignore::GitIgnoreFile,
     merged_tree::MergedTree,
     object_id::ObjectId,
@@ -327,7 +327,7 @@ async fn main() -> Result<()> {
     // Determine workspace path
     let workspace_path = match args.path {
         Some(p) => p,
-        None => env::current_dir().context("Failed to get current directory")?,
+        None => current_dir().context("Failed to get current directory")?,
     };
     info!(?workspace_path, "Starting workspace discovery");
 
@@ -364,7 +364,9 @@ async fn run_bookmark(
     let target_commit = resolve_single_commit(&repo, workspace, &effective_to)?;
 
     // Check if any commit in the range already has a bookmark - if so, move it
-    if let Some(existing_name) = find_existing_bookmark_in_range(&repo, workspace, &from_rev, &effective_to)? {
+    if let Some(existing_name) =
+        find_existing_bookmark_in_range(&repo, workspace, &from_rev, &effective_to)?
+    {
         let final_name = match &prefix {
             Some(p) if !existing_name.starts_with(&format!("{p}/")) => {
                 format!("{p}/{existing_name}")
@@ -616,8 +618,8 @@ fn resolve_single_commit(
     repo.store().get_commit(&commit_id).map_err(Into::into)
 }
 
-/// Set bookmark to point to commit. Returns true if bookmark already existed (moved), false if created.
-/// Also exports the bookmark to git refs.
+/// Set bookmark to point to commit. Returns true if bookmark already existed (moved), false if
+/// created. Also exports the bookmark to git refs.
 fn set_bookmark(repo: &Arc<ReadonlyRepo>, name: &str, commit: &Commit) -> Result<bool> {
     let ref_name = RefName::new(name);
     let existed = repo.view().get_local_bookmark(ref_name).is_present();
@@ -629,7 +631,7 @@ fn set_bookmark(repo: &Arc<ReadonlyRepo>, name: &str, commit: &Commit) -> Result
     mut_repo.set_local_bookmark_target(ref_name, target);
 
     // Export to git refs so @git stays in sync
-    if let Err(e) = jj_lib::git::export_refs(mut_repo) {
+    if let Err(e) = export_refs(mut_repo) {
         warn!(error = %e, "Failed to export bookmark to git");
     }
 
