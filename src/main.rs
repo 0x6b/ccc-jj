@@ -86,6 +86,7 @@ enum Commands {
         dry_run: bool,
     },
     /// Generate a commit message and commit changes (default command)
+    #[command(alias = "c")]
     Commit {
         /// Language to use for commit messages
         #[arg(short, long, default_value = "English", env = "CCC_JJ_LANGUAGE")]
