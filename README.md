@@ -1,28 +1,28 @@
 # jc
 
-A [Jujutsu](https://www.jj-vcs.dev/) (`jj`) auto-committer CLI tool that uses Claude to generate commit messages from diffs.
+A [Jujutsu](https://www.jj-vcs.dev/) (`jj`) CLI tool that uses Claude to generate commit messages and bookmark names.
 
 ## Description
 
-`jc` is a standalone command-line tool that automatically generates commit messages for your Jujutsu workspace changes using Claude AI. It discovers your jj workspace, extracts diffs, generates appropriate commit messages via the Claude CLI, and creates commits.
+`jc` is a standalone command-line tool for Jujutsu workspaces that:
+- Automatically generates commit messages from diffs using Claude AI
+- Generates meaningful bookmark (branch) names from commit summaries
 
 ## Features
 
 - Automatic jj workspace discovery
-- Diff extraction using `jj diff`
-- Claude-powered commit message generation
+- Diff extraction using jj-lib (in-process, no shell-out)
+- Claude-powered commit message and bookmark name generation
 - Conventional commits format
-- Standalone tool (no external dependencies except `jj` and `claude` CLI)
+- Smart bookmark handling: reuses existing bookmarks in the branch, syncs to git refs
 
 ## Prerequisites
 
 - Rust toolchain (for building)
 - [Jujutsu (jj)](https://github.com/martinvonz/jj) - Version control system
-- [Claude CLI](https://github.com/anthropics/claude-cli) - For generating commit messages
+- [Claude CLI](https://github.com/anthropics/claude-cli) - For AI generation
 
 ## Installation
-
-### Installing Locally
 
 ```console
 $ cargo install --git https://github.com/0x6b/ccc-jj
@@ -30,58 +30,81 @@ $ cargo install --git https://github.com/0x6b/ccc-jj
 
 ## Usage
 
-### Basic Usage
+### Commit (default command)
 
-Run from within a jj workspace:
+Generate a commit message and commit changes:
 
 ```bash
-$ jc --help
-Auto-commit changes in a jj workspace using Claude for commit messages
-
-Usage: jc [OPTIONS]
+$ jc
+# or explicitly:
+$ jc commit
+```
 
 Options:
-  -p, --path <PATH>          Path to the workspace (defaults to current directory)
-  -l, --language <LANGUAGE>  Language to use for commit messages [env: CCC_JJ_LANGUAGE=] [default: English]
-  -m, --model <MODEL>        Model to use for generating a commit message [env: CCC_JJ_MODEL=] [default: haiku]
-  -h, --help                 Print help
-  -V, --version              Print version
+- `-l, --language <LANGUAGE>` - Language for commit messages [default: English]
+- `-m, --model <MODEL>` - Claude model to use [default: haiku]
+- `-p, --path <PATH>` - Path to workspace [default: current directory]
+
+### Bookmark
+
+Generate and set a bookmark name for the current branch:
+
+```bash
+$ jc bookmark
+# or use the alias:
+$ jc b
+```
+
+Options:
+- `-f, --from <REV>` - Base revision [default: main@origin or main]
+- `-t, --to <REV>` - Target revision [default: @, or @- if @ is empty]
+- `--prefix <PREFIX>` - Add prefix (e.g., `feature` → `feature/generated-name`)
+- `--dry-run` - Print generated name without creating bookmark
+
+Behavior:
+- If a bookmark already exists in the branch range, it moves that bookmark to the target
+- Otherwise, generates a new name from commit summaries using Claude
+- Automatically exports to git refs (no `@git` drift)
+
+Example workflow:
+```bash
+# Make changes and commit
+$ jc
+
+# Create/update bookmark for the branch
+$ jc b
+
+# Push to remote
+$ jj git push
 ```
 
 ## How It Works
 
-1. Workspace Discovery: Searches for a jj workspace starting from the specified directory
-2. Change Detection: Snapshots the working copy and compares its tree with the parent commit's tree to detect actual changes
-3. Diff Extraction: Runs `jj diff` to get the current changes for message generation
-4. Message Generation: Calls Claude CLI with the diff to generate a conventional commit message
-5. Commit Creation: Creates a new commit in jj with the generated message
+### Commit
+1. Discovers jj workspace from current directory
+2. Snapshots working copy and compares with parent tree
+3. Generates diff using jj-lib
+4. Calls Claude CLI to generate conventional commit message
+5. Creates commit with generated message
 
-The tool intelligently prevents duplicate commits by comparing tree IDs - if the working copy tree matches the parent commit's tree, no commit is created. This handles jj's behavior of automatically creating new working-copy commits after each commit.
+### Bookmark
+1. Resolves target revision (uses `@-` if `@` is empty)
+2. Checks for existing bookmark in the branch range (`from..to`)
+3. If found, moves existing bookmark to target
+4. If not, generates name from commit summaries via Claude
+5. Exports bookmark to git refs
 
 ## Configuration
 
 ### User Configuration
 
-The tool automatically loads your existing jj configuration from standard locations:
-
+Loads existing jj configuration from:
 - `~/.jjconfig.toml`
 - `~/.config/jj/config.toml`
 
-If you don't have jj configured yet, set it up with:
+### Claude CLI
 
-```bash
-jj config set --user user.name "Your Name"
-jj config set --user user.email "your.email@example.com"
-```
-
-The tool also automatically detects:
-
-- `operation.hostname`: Your machine's hostname (via `whoami` crate)
-- `operation.username`: Your username (via `whoami` crate or `$USER` environment variable)
-
-### Claude CLI Configuration
-
-The tool uses the Claude CLI's existing configuration. Ensure your Claude CLI is properly configured with API credentials before using this tool.
+Uses Claude CLI's existing configuration. Ensure it's properly configured with API credentials.
 
 ## License
 
