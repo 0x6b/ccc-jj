@@ -360,6 +360,35 @@ async fn run_bookmark(
 
     // Resolve target revision, skipping empty @ if needed
     let effective_to = resolve_bookmark_target(&repo, workspace, to)?;
+    let target_commit = resolve_single_commit(&repo, workspace, &effective_to)?;
+
+    // Check if any commit in the range already has a bookmark - if so, move it
+    if let Some(existing_name) = find_existing_bookmark_in_range(&repo, workspace, &from_rev, &effective_to)? {
+        let final_name = match &prefix {
+            Some(p) if !existing_name.starts_with(&format!("{p}/")) => {
+                format!("{p}/{existing_name}")
+            }
+            _ => existing_name.clone(),
+        };
+
+        if dry_run {
+            println!("{final_name}");
+            return Ok(());
+        }
+
+        let was_moved = set_bookmark(&repo, &final_name, &target_commit)?;
+        let action = if was_moved { "Moved bookmark" } else { "Created bookmark" };
+        println!(
+            "{} {} {} {}",
+            action.green(),
+            final_name.blue().bold(),
+            "at".white().dimmed(),
+            target_commit.id().hex()[..8].to_string().yellow()
+        );
+        return Ok(());
+    }
+
+    // No existing bookmark - generate a new name
     info!(from = %from_rev, to = %effective_to, "Resolving revset range");
 
     let commit_summaries = get_commit_summaries(&repo, workspace, &from_rev, &effective_to)?;
@@ -385,9 +414,7 @@ async fn run_bookmark(
         return Ok(());
     }
 
-    let target_commit = resolve_single_commit(&repo, workspace, &effective_to)?;
-    create_bookmark(&repo, &final_name, &target_commit)?;
-
+    set_bookmark(&repo, &final_name, &target_commit)?;
     println!(
         "{} {} {} {}",
         "Created bookmark".green(),
@@ -397,6 +424,54 @@ async fn run_bookmark(
     );
 
     Ok(())
+}
+
+/// Find an existing local bookmark anywhere in the given revset range
+fn find_existing_bookmark_in_range(
+    repo: &Arc<ReadonlyRepo>,
+    workspace: &Workspace,
+    from: &str,
+    to: &str,
+) -> Result<Option<String>> {
+    let settings = repo.settings();
+    let extensions = RevsetExtensions::new();
+    let aliases_map: RevsetAliasesMap = AliasesMap::new();
+    let path_converter = RepoPathUiConverter::Fs {
+        cwd: workspace.workspace_root().to_path_buf(),
+        base: workspace.workspace_root().to_path_buf(),
+    };
+    let workspace_ctx = RevsetWorkspaceContext {
+        path_converter: &path_converter,
+        workspace_name: workspace.workspace_name(),
+    };
+    let context = RevsetParseContext {
+        aliases_map: &aliases_map,
+        local_variables: HashMap::new(),
+        user_email: settings.user_email(),
+        date_pattern_context: DatePatternContext::Local(Local::now()),
+        default_ignored_remote: None,
+        use_glob_by_default: false,
+        extensions: &extensions,
+        workspace: Some(workspace_ctx),
+    };
+
+    let revset_str = format!("{from}..{to}");
+    let mut diagnostics = RevsetDiagnostics::new();
+    let expression = parse(&mut diagnostics, &revset_str, &context)?;
+    let symbol_resolver = SymbolResolver::new(repo.as_ref(), extensions.symbol_resolvers());
+    let resolved = expression.resolve_user_expression(repo.as_ref(), &symbol_resolver)?;
+    let revset = resolved.evaluate(repo.as_ref())?;
+
+    let view = repo.view();
+    for commit_id in revset.iter() {
+        let commit_id = commit_id?;
+        for (name, target) in view.local_bookmarks() {
+            if target.added_ids().any(|id| id == &commit_id) {
+                return Ok(Some(name.as_str().to_string()));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Resolve bookmark target, using @- if @ is empty (idiomatic jj behavior)
@@ -540,16 +615,20 @@ fn resolve_single_commit(
     repo.store().get_commit(&commit_id).map_err(Into::into)
 }
 
-fn create_bookmark(repo: &Arc<ReadonlyRepo>, name: &str, commit: &Commit) -> Result<()> {
+/// Set bookmark to point to commit. Returns true if bookmark already existed (moved), false if created.
+fn set_bookmark(repo: &Arc<ReadonlyRepo>, name: &str, commit: &Commit) -> Result<bool> {
+    let ref_name = RefName::new(name);
+    let existed = repo.view().get_local_bookmark(ref_name).is_present();
+
     let mut tx = repo.start_transaction();
     let mut_repo = tx.repo_mut();
 
-    let ref_name = RefName::new(name);
     let target = RefTarget::normal(commit.id().clone());
     mut_repo.set_local_bookmark_target(ref_name, target);
 
-    tx.commit(format!("create bookmark '{name}' via ccc-jj"))?;
-    Ok(())
+    let action = if existed { "move" } else { "create" };
+    tx.commit(format!("{action} bookmark '{name}' via ccc-jj"))?;
+    Ok(existed)
 }
 
 async fn run_commit(workspace: &Workspace, language: &str, model: &str) -> Result<()> {
