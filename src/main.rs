@@ -66,6 +66,7 @@ struct Args {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Generate a bookmark name for commits between the current revision and a base
+    #[command(alias = "b")]
     Bookmark {
         /// Base revision to compare against (default: main@origin or main)
         #[arg(short, long)]
@@ -360,11 +361,14 @@ async fn run_bookmark(
         Some(rev) => rev,
         None => find_default_base(&repo)?,
     };
-    info!(from = %from_rev, to = %to, "Resolving revset range");
 
-    let commit_summaries = get_commit_summaries(&repo, workspace, &from_rev, to)?;
+    // Resolve target revision, skipping empty @ if needed
+    let effective_to = resolve_bookmark_target(&repo, workspace, to)?;
+    info!(from = %from_rev, to = %effective_to, "Resolving revset range");
+
+    let commit_summaries = get_commit_summaries(&repo, workspace, &from_rev, &effective_to)?;
     if commit_summaries.is_empty() {
-        bail!("No commits found between {from_rev} and {to}");
+        bail!("No commits found between {from_rev} and {effective_to}");
     }
     debug!(commit_count = commit_summaries.lines().count(), "Found commits");
 
@@ -385,7 +389,7 @@ async fn run_bookmark(
         return Ok(());
     }
 
-    let target_commit = resolve_single_commit(&repo, workspace, to)?;
+    let target_commit = resolve_single_commit(&repo, workspace, &effective_to)?;
     create_bookmark(&repo, &final_name, &target_commit)?;
 
     println!(
@@ -397,6 +401,36 @@ async fn run_bookmark(
     );
 
     Ok(())
+}
+
+/// Resolve bookmark target, using @- if @ is empty (idiomatic jj behavior)
+fn resolve_bookmark_target(
+    repo: &Arc<ReadonlyRepo>,
+    workspace: &Workspace,
+    to: &str,
+) -> Result<String> {
+    if to != "@" {
+        return Ok(to.to_string());
+    }
+
+    let commit = resolve_single_commit(repo, workspace, "@")?;
+
+    // Check if @ is empty (no description and tree matches parent)
+    let is_empty = commit.description().is_empty() && {
+        if let Some(parent_id) = commit.parent_ids().first() {
+            let parent = repo.store().get_commit(parent_id)?;
+            commit.tree_ids() == parent.tree_ids()
+        } else {
+            false
+        }
+    };
+
+    if is_empty {
+        debug!("@ is empty, using @- as bookmark target");
+        Ok("@-".to_string())
+    } else {
+        Ok("@".to_string())
+    }
 }
 
 fn find_default_base(repo: &Arc<ReadonlyRepo>) -> Result<String> {
