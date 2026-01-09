@@ -34,9 +34,10 @@ use jj_lib::{
     op_store::RefTarget,
     ref_name::RefName,
     repo::{ReadonlyRepo, Repo, StoreFactories},
+    repo_path::RepoPathUiConverter,
     revset::{
-        RevsetAliasesMap, RevsetDiagnostics, RevsetExtensions, RevsetParseContext, SymbolResolver,
-        parse,
+        RevsetAliasesMap, RevsetDiagnostics, RevsetExtensions, RevsetParseContext,
+        RevsetWorkspaceContext, SymbolResolver, parse,
     },
     settings::UserSettings,
     time_util::DatePatternContext,
@@ -361,7 +362,7 @@ async fn run_bookmark(
     };
     info!(from = %from_rev, to = %to, "Resolving revset range");
 
-    let commit_summaries = get_commit_summaries(&repo, &from_rev, to)?;
+    let commit_summaries = get_commit_summaries(&repo, workspace, &from_rev, to)?;
     if commit_summaries.is_empty() {
         bail!("No commits found between {from_rev} and {to}");
     }
@@ -384,7 +385,7 @@ async fn run_bookmark(
         return Ok(());
     }
 
-    let target_commit = resolve_single_commit(&repo, to)?;
+    let target_commit = resolve_single_commit(&repo, workspace, to)?;
     create_bookmark(&repo, &final_name, &target_commit)?;
 
     println!(
@@ -419,10 +420,23 @@ fn find_default_base(repo: &Arc<ReadonlyRepo>) -> Result<String> {
     bail!("Could not find main@origin or main bookmark. Please specify --from explicitly.")
 }
 
-fn get_commit_summaries(repo: &Arc<ReadonlyRepo>, from: &str, to: &str) -> Result<String> {
+fn get_commit_summaries(
+    repo: &Arc<ReadonlyRepo>,
+    workspace: &Workspace,
+    from: &str,
+    to: &str,
+) -> Result<String> {
     let settings = repo.settings();
     let extensions = RevsetExtensions::new();
     let aliases_map: RevsetAliasesMap = AliasesMap::new();
+    let path_converter = RepoPathUiConverter::Fs {
+        cwd: workspace.workspace_root().to_path_buf(),
+        base: workspace.workspace_root().to_path_buf(),
+    };
+    let workspace_ctx = RevsetWorkspaceContext {
+        path_converter: &path_converter,
+        workspace_name: workspace.workspace_name(),
+    };
     let context = RevsetParseContext {
         aliases_map: &aliases_map,
         local_variables: HashMap::new(),
@@ -431,7 +445,7 @@ fn get_commit_summaries(repo: &Arc<ReadonlyRepo>, from: &str, to: &str) -> Resul
         default_ignored_remote: None,
         use_glob_by_default: false,
         extensions: &extensions,
-        workspace: None,
+        workspace: Some(workspace_ctx),
     };
 
     let revset_str = format!("{from}..{to}");
@@ -453,10 +467,22 @@ fn get_commit_summaries(repo: &Arc<ReadonlyRepo>, from: &str, to: &str) -> Resul
     Ok(summaries.join("\n"))
 }
 
-fn resolve_single_commit(repo: &Arc<ReadonlyRepo>, rev: &str) -> Result<jj_lib::commit::Commit> {
+fn resolve_single_commit(
+    repo: &Arc<ReadonlyRepo>,
+    workspace: &Workspace,
+    rev: &str,
+) -> Result<jj_lib::commit::Commit> {
     let settings = repo.settings();
     let extensions = RevsetExtensions::new();
     let aliases_map: RevsetAliasesMap = AliasesMap::new();
+    let path_converter = RepoPathUiConverter::Fs {
+        cwd: workspace.workspace_root().to_path_buf(),
+        base: workspace.workspace_root().to_path_buf(),
+    };
+    let workspace_ctx = RevsetWorkspaceContext {
+        path_converter: &path_converter,
+        workspace_name: workspace.workspace_name(),
+    };
     let context = RevsetParseContext {
         aliases_map: &aliases_map,
         local_variables: HashMap::new(),
@@ -465,7 +491,7 @@ fn resolve_single_commit(repo: &Arc<ReadonlyRepo>, rev: &str) -> Result<jj_lib::
         default_ignored_remote: None,
         use_glob_by_default: false,
         extensions: &extensions,
-        workspace: None,
+        workspace: Some(workspace_ctx),
     };
 
     let mut diagnostics = RevsetDiagnostics::new();
