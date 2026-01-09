@@ -616,6 +616,7 @@ fn resolve_single_commit(
 }
 
 /// Set bookmark to point to commit. Returns true if bookmark already existed (moved), false if created.
+/// Also exports the bookmark to git refs.
 fn set_bookmark(repo: &Arc<ReadonlyRepo>, name: &str, commit: &Commit) -> Result<bool> {
     let ref_name = RefName::new(name);
     let existed = repo.view().get_local_bookmark(ref_name).is_present();
@@ -625,6 +626,11 @@ fn set_bookmark(repo: &Arc<ReadonlyRepo>, name: &str, commit: &Commit) -> Result
 
     let target = RefTarget::normal(commit.id().clone());
     mut_repo.set_local_bookmark_target(ref_name, target);
+
+    // Export to git refs so @git stays in sync
+    if let Err(e) = jj_lib::git::export_refs(mut_repo) {
+        warn!(error = %e, "Failed to export bookmark to git");
+    }
 
     let action = if existed { "move" } else { "create" };
     tx.commit(format!("{action} bookmark '{name}' via ccc-jj"))?;
