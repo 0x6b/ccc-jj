@@ -4,6 +4,7 @@ mod diff;
 mod text_formatter;
 
 use std::{
+    collections::HashMap,
     env,
     env::var,
     path::{Path, PathBuf},
@@ -11,10 +12,9 @@ use std::{
     sync::Arc,
 };
 
-use std::collections::HashMap;
-
 use anyhow::{Context, Result, bail};
 use bookmark_generator::BookmarkGenerator;
+use chrono::Local;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use commit_message_generator::{
@@ -23,9 +23,10 @@ use commit_message_generator::{
 };
 use console::strip_ansi_codes;
 use diff::{FileChangeSummary, build_collapse_matcher, get_file_change_summary, get_tree_diff};
+use dirs::{config_dir, home_dir};
 use gethostname::gethostname;
-use chrono::Local;
 use jj_lib::{
+    commit::Commit,
     config::{ConfigLayer, ConfigResolutionContext, ConfigSource, StackedConfig, resolve},
     dsl_util::AliasesMap,
     gitignore::GitIgnoreFile,
@@ -94,15 +95,13 @@ enum Commands {
 
 impl Default for Commands {
     fn default() -> Self {
-        Commands::Commit {
-            language: "English".to_string(),
-        }
+        Commands::Commit { language: "English".to_string() }
     }
 }
 
 /// Load user configuration from standard jj config locations
 fn load_user_config(config: &mut StackedConfig) -> Result<()> {
-    if let Some(home_dir) = dirs::home_dir() {
+    if let Some(home_dir) = home_dir() {
         // Try to load from ~/.jjconfig.toml
         let home_config = home_dir.join(".jjconfig.toml");
         if home_config.exists() {
@@ -119,7 +118,7 @@ fn load_user_config(config: &mut StackedConfig) -> Result<()> {
     }
 
     // Also try platform-specific config directory (for Windows/macOS)
-    if let Some(config_dir) = dirs::config_dir() {
+    if let Some(config_dir) = config_dir() {
         let platform_config = config_dir.join("jj").join("config.toml");
         if platform_config.exists() {
             let layer = ConfigLayer::load_from_file(ConfigSource::User, platform_config)?;
@@ -164,7 +163,7 @@ fn get_global_git_excludes_file() -> Option<PathBuf> {
         if !path_str.is_empty() {
             // Expand ~ to home directory if present
             let expanded = if let Some(stripped) = path_str.strip_prefix("~/") {
-                if let Some(home) = dirs::home_dir() {
+                if let Some(home) = home_dir() {
                     home.join(stripped)
                 } else {
                     PathBuf::from(path_str)
@@ -187,7 +186,7 @@ fn get_global_git_excludes_file() -> Option<PathBuf> {
     }
 
     // Final fallback: ~/.config/git/ignore
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = home_dir() {
         let path = home.join(".config").join("git").join("ignore");
         if path.exists() {
             return Some(path);
@@ -230,7 +229,7 @@ fn find_workspace(start_dir: &Path) -> Result<Workspace> {
 
     // Resolve conditional scopes (e.g., --when.repositories)
     let hostname = gethostname().to_str().map(|s| s.to_owned()).unwrap_or_default();
-    let home_dir = dirs::home_dir();
+    let home_dir = home_dir();
     let context = ConfigResolutionContext {
         home_dir: home_dir.as_deref(),
         repo_path: Some(workspace_root),
@@ -336,12 +335,9 @@ async fn main() -> Result<()> {
     info!(workspace_root = ?workspace.workspace_root(), "Found workspace");
 
     match args.command.unwrap_or_default() {
-        Commands::Bookmark {
-            from,
-            to,
-            prefix,
-            dry_run,
-        } => run_bookmark(&workspace, &args.model, from, &to, prefix, dry_run).await,
+        Commands::Bookmark { from, to, prefix, dry_run } => {
+            run_bookmark(&workspace, &args.model, from, &to, prefix, dry_run).await
+        }
         Commands::Commit { language } => run_commit(&workspace, &language, &args.model).await,
     }
 }
@@ -385,7 +381,7 @@ async fn run_bookmark(
     };
 
     if dry_run {
-        println!("{}", final_name);
+        println!("{final_name}");
         return Ok(());
     }
 
@@ -505,7 +501,7 @@ fn resolve_single_commit(
     repo: &Arc<ReadonlyRepo>,
     workspace: &Workspace,
     rev: &str,
-) -> Result<jj_lib::commit::Commit> {
+) -> Result<Commit> {
     let settings = repo.settings();
     let extensions = RevsetExtensions::new();
     let aliases_map: RevsetAliasesMap = AliasesMap::new();
@@ -544,11 +540,7 @@ fn resolve_single_commit(
     repo.store().get_commit(&commit_id).map_err(Into::into)
 }
 
-fn create_bookmark(
-    repo: &Arc<ReadonlyRepo>,
-    name: &str,
-    commit: &jj_lib::commit::Commit,
-) -> Result<()> {
+fn create_bookmark(repo: &Arc<ReadonlyRepo>, name: &str, commit: &Commit) -> Result<()> {
     let mut tx = repo.start_transaction();
     let mut_repo = tx.repo_mut();
 

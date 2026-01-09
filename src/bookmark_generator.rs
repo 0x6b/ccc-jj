@@ -57,10 +57,7 @@ impl BookmarkGenerator {
     }
 
     pub fn generate(&self, commit_summaries: &str) -> Option<String> {
-        debug!(
-            summaries_len = commit_summaries.len(),
-            "Starting bookmark name generation"
-        );
+        debug!(summaries_len = commit_summaries.len(), "Starting bookmark name generation");
         self.try_generate(commit_summaries).and_then(|name| {
             let name = name.trim().to_lowercase();
             if VALID_BOOKMARK_RE.is_match(&name) {
@@ -84,9 +81,7 @@ impl BookmarkGenerator {
         spinner.set_message("Generating bookmark name with Claude...");
         spinner.enable_steady_tick(std::time::Duration::from_millis(200));
 
-        let prompt = self
-            .prompt_template
-            .replace("{commit_summaries}", commit_summaries);
+        let prompt = self.prompt_template.replace("{commit_summaries}", commit_summaries);
         trace!(prompt_len = prompt.len(), "Prepared prompt for Claude");
 
         debug!(
