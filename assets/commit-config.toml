@@ -6,6 +6,25 @@ args = ["-p", "--output-format", "json", "--no-session-persistence"]
 # Fallback message if generation fails
 default_commit_message = "chore: update changes"
 
+[bookmark]
+# Prompt template for generating bookmark names from commit summaries
+# Variables: {commit_summaries}
+prompt_template = """
+Generate a short, descriptive bookmark (branch) name for the following commits.
+
+Rules:
+- Use 2-6 lowercase words separated by hyphens (e.g., "add-user-auth", "fix-login-redirect")
+- Derive the name from the overall theme/purpose of the commits
+- Be specific but concise - capture the main change
+- Do NOT use dates, ticket numbers, or generic names like "update-code"
+- Do NOT use prefixes like "feature/", "fix/", etc.
+
+Commits:
+{commit_summaries}
+
+OUTPUT ONLY THE BOOKMARK NAME. NO EXPLANATIONS.
+"""
+
 [diff]
 # Files with more changed lines than this threshold are collapsed to a summary
 # Helps avoid exceeding LLM context limits with large file changes

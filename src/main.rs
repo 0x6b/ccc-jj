@@ -1,3 +1,4 @@
+mod bookmark_generator;
 mod commit_message_generator;
 mod diff;
 mod text_formatter;
@@ -10,8 +11,11 @@ use std::{
     sync::Arc,
 };
 
+use std::collections::HashMap;
+
 use anyhow::{Context, Result, bail};
-use clap::Parser;
+use bookmark_generator::BookmarkGenerator;
+use clap::{Parser, Subcommand};
 use colored::Colorize;
 use commit_message_generator::{
     CommitMessageGenerator, collapse_patterns, max_diff_bytes, max_diff_lines,
@@ -20,13 +24,22 @@ use commit_message_generator::{
 use console::strip_ansi_codes;
 use diff::{FileChangeSummary, build_collapse_matcher, get_file_change_summary, get_tree_diff};
 use gethostname::gethostname;
+use chrono::Local;
 use jj_lib::{
     config::{ConfigLayer, ConfigResolutionContext, ConfigSource, StackedConfig, resolve},
+    dsl_util::AliasesMap,
     gitignore::GitIgnoreFile,
     merged_tree::MergedTree,
     object_id::ObjectId,
-    repo::{Repo, StoreFactories},
+    op_store::RefTarget,
+    ref_name::RefName,
+    repo::{ReadonlyRepo, Repo, StoreFactories},
+    revset::{
+        RevsetAliasesMap, RevsetDiagnostics, RevsetExtensions, RevsetParseContext, SymbolResolver,
+        parse,
+    },
     settings::UserSettings,
+    time_util::DatePatternContext,
     working_copy::SnapshotOptions,
     workspace::{Workspace, default_working_copy_factories},
 };
@@ -38,16 +51,51 @@ use unicode_width::UnicodeWidthStr;
 #[command(about, version)]
 struct Args {
     /// Path to the workspace (defaults to current directory)
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     path: Option<PathBuf>,
 
-    /// Language to use for commit messages
-    #[arg(short, long, default_value = "English", env = "CCC_JJ_LANGUAGE")]
-    language: String,
-
-    /// Model to use for generating a commit message
-    #[arg(short, long, default_value = "haiku", env = "CCC_JJ_MODEL")]
+    /// Model to use for AI generation
+    #[arg(short, long, default_value = "haiku", env = "CCC_JJ_MODEL", global = true)]
     model: String,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Generate a bookmark name for commits between the current revision and a base
+    Bookmark {
+        /// Base revision to compare against (default: main@origin or main)
+        #[arg(short, long)]
+        from: Option<String>,
+
+        /// Target revision (default: @)
+        #[arg(short, long, default_value = "@")]
+        to: String,
+
+        /// Prefix for the bookmark name (e.g., "feature" -> "feature/generated-name")
+        #[arg(long)]
+        prefix: Option<String>,
+
+        /// Only print the generated name, don't create the bookmark
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Generate a commit message and commit changes (default command)
+    Commit {
+        /// Language to use for commit messages
+        #[arg(short, long, default_value = "English", env = "CCC_JJ_LANGUAGE")]
+        language: String,
+    },
+}
+
+impl Default for Commands {
+    fn default() -> Self {
+        Commands::Commit {
+            language: "English".to_string(),
+        }
+    }
 }
 
 /// Load user configuration from standard jj config locations
@@ -285,7 +333,174 @@ async fn main() -> Result<()> {
     let workspace = find_workspace(&workspace_path)?;
     info!(workspace_root = ?workspace.workspace_root(), "Found workspace");
 
-    // Check if working copy commit needs a description
+    match args.command.unwrap_or_default() {
+        Commands::Bookmark {
+            from,
+            to,
+            prefix,
+            dry_run,
+        } => run_bookmark(&workspace, &args.model, from, &to, prefix, dry_run).await,
+        Commands::Commit { language } => run_commit(&workspace, &language, &args.model).await,
+    }
+}
+
+async fn run_bookmark(
+    workspace: &Workspace,
+    model: &str,
+    from: Option<String>,
+    to: &str,
+    prefix: Option<String>,
+    dry_run: bool,
+) -> Result<()> {
+    let repo = workspace.repo_loader().load_at_head()?;
+    debug!("Loaded repository at head");
+
+    let from_rev = match from {
+        Some(rev) => rev,
+        None => find_default_base(&repo)?,
+    };
+    info!(from = %from_rev, to = %to, "Resolving revset range");
+
+    let commit_summaries = get_commit_summaries(&repo, &from_rev, to)?;
+    if commit_summaries.is_empty() {
+        bail!("No commits found between {from_rev} and {to}");
+    }
+    debug!(commit_count = commit_summaries.lines().count(), "Found commits");
+
+    info!(model = %model, "Generating bookmark name with Claude");
+    let generator = BookmarkGenerator::new(model);
+    let bookmark_name = match generator.generate(&commit_summaries) {
+        Some(name) => name,
+        None => bail!("Failed to generate bookmark name"),
+    };
+
+    let final_name = match &prefix {
+        Some(p) => format!("{p}/{bookmark_name}"),
+        None => bookmark_name,
+    };
+
+    if dry_run {
+        println!("{}", final_name);
+        return Ok(());
+    }
+
+    let target_commit = resolve_single_commit(&repo, to)?;
+    create_bookmark(&repo, &final_name, &target_commit)?;
+
+    println!(
+        "{} {} {} {}",
+        "Created bookmark".green(),
+        final_name.blue().bold(),
+        "at".white().dimmed(),
+        target_commit.id().hex()[..8].to_string().yellow()
+    );
+
+    Ok(())
+}
+
+fn find_default_base(repo: &Arc<ReadonlyRepo>) -> Result<String> {
+    let view = repo.view();
+    let remote_name = jj_lib::ref_name::RemoteName::new("origin");
+    let main_ref = RefName::new("main");
+
+    let remote_symbol = main_ref.to_remote_symbol(remote_name);
+    let remote_ref = view.get_remote_bookmark(remote_symbol);
+    if remote_ref.target.is_present() {
+        debug!("Using main@origin as base");
+        return Ok("main@origin".to_string());
+    }
+
+    let local_ref = view.get_local_bookmark(main_ref);
+    if local_ref.is_present() {
+        debug!("Using main as base");
+        return Ok("main".to_string());
+    }
+
+    bail!("Could not find main@origin or main bookmark. Please specify --from explicitly.")
+}
+
+fn get_commit_summaries(repo: &Arc<ReadonlyRepo>, from: &str, to: &str) -> Result<String> {
+    let settings = repo.settings();
+    let extensions = RevsetExtensions::new();
+    let aliases_map: RevsetAliasesMap = AliasesMap::new();
+    let context = RevsetParseContext {
+        aliases_map: &aliases_map,
+        local_variables: HashMap::new(),
+        user_email: settings.user_email(),
+        date_pattern_context: DatePatternContext::Local(Local::now()),
+        default_ignored_remote: None,
+        use_glob_by_default: false,
+        extensions: &extensions,
+        workspace: None,
+    };
+
+    let revset_str = format!("{from}..{to}");
+    let mut diagnostics = RevsetDiagnostics::new();
+    let expression = parse(&mut diagnostics, &revset_str, &context)?;
+    let symbol_resolver = SymbolResolver::new(repo.as_ref(), extensions.symbol_resolvers());
+    let resolved = expression.resolve_user_expression(repo.as_ref(), &symbol_resolver)?;
+    let revset = resolved.evaluate(repo.as_ref())?;
+
+    let mut summaries = Vec::new();
+    for commit_id in revset.iter() {
+        let commit = repo.store().get_commit(&commit_id?)?;
+        let desc = commit.description().trim();
+        if !desc.is_empty() {
+            summaries.push(format!("- {}", desc.lines().next().unwrap_or("")));
+        }
+    }
+
+    Ok(summaries.join("\n"))
+}
+
+fn resolve_single_commit(repo: &Arc<ReadonlyRepo>, rev: &str) -> Result<jj_lib::commit::Commit> {
+    let settings = repo.settings();
+    let extensions = RevsetExtensions::new();
+    let aliases_map: RevsetAliasesMap = AliasesMap::new();
+    let context = RevsetParseContext {
+        aliases_map: &aliases_map,
+        local_variables: HashMap::new(),
+        user_email: settings.user_email(),
+        date_pattern_context: DatePatternContext::Local(Local::now()),
+        default_ignored_remote: None,
+        use_glob_by_default: false,
+        extensions: &extensions,
+        workspace: None,
+    };
+
+    let mut diagnostics = RevsetDiagnostics::new();
+    let expression = parse(&mut diagnostics, rev, &context)?;
+    let symbol_resolver = SymbolResolver::new(repo.as_ref(), extensions.symbol_resolvers());
+    let resolved = expression.resolve_user_expression(repo.as_ref(), &symbol_resolver)?;
+    let revset = resolved.evaluate(repo.as_ref())?;
+
+    let mut iter = revset.iter();
+    let commit_id = iter.next().context("Revset resolved to no commits")??;
+
+    if iter.next().is_some() {
+        bail!("Revset '{rev}' resolved to multiple commits, expected single commit");
+    }
+
+    repo.store().get_commit(&commit_id).map_err(Into::into)
+}
+
+fn create_bookmark(
+    repo: &Arc<ReadonlyRepo>,
+    name: &str,
+    commit: &jj_lib::commit::Commit,
+) -> Result<()> {
+    let mut tx = repo.start_transaction();
+    let mut_repo = tx.repo_mut();
+
+    let ref_name = RefName::new(name);
+    let target = RefTarget::normal(commit.id().clone());
+    mut_repo.set_local_bookmark_target(ref_name, target);
+
+    tx.commit(format!("create bookmark '{name}' via ccc-jj"))?;
+    Ok(())
+}
+
+async fn run_commit(workspace: &Workspace, language: &str, model: &str) -> Result<()> {
     let repo = workspace.repo_loader().load_at_head()?;
     debug!("Loaded repository at head");
 
@@ -296,11 +511,9 @@ async fn main() -> Result<()> {
     let wc_commit = repo.store().get_commit(wc_commit_id)?;
     debug!(wc_commit_id = %wc_commit_id.hex(), "Working copy commit");
 
-    // Snapshot to get the actual filesystem state
     debug!("Starting working copy mutation");
     let mut locked_wc = workspace.working_copy().start_mutation()?;
 
-    // Load gitignore files (global and workspace .gitignore)
     let base_ignores = load_base_ignores(workspace.workspace_root())?;
     debug!("Loaded base ignores");
 
@@ -315,7 +528,6 @@ async fn main() -> Result<()> {
     let (current_tree, _stats) = locked_wc.snapshot(&snapshot_options).await?;
     debug!("Snapshot complete");
 
-    // Check if the working copy commit has changes (compared to its parent)
     let parent_tree = if !wc_commit.parent_ids().is_empty() {
         let parent_commit = repo.store().get_commit(&wc_commit.parent_ids()[0])?;
         parent_commit.tree()
@@ -326,7 +538,6 @@ async fn main() -> Result<()> {
         )
     };
 
-    // If working copy tree matches parent tree, there's nothing to commit
     if current_tree.tree_ids() == parent_tree.tree_ids() {
         println!("No changes detected, nothing to commit");
         drop(locked_wc);
@@ -334,14 +545,12 @@ async fn main() -> Result<()> {
     }
     debug!("Changes detected in working copy");
 
-    // If working copy commit already has a description, don't overwrite it
     if !wc_commit.description().is_empty() {
         warn!(description = %wc_commit.description(), "Working copy already has description, skipping");
         drop(locked_wc);
         return Ok(());
     }
 
-    // Generate diff for commit message (using jj-lib API, not external command)
     debug!("Generating diff");
     let collapse_matcher = build_collapse_matcher(collapse_patterns());
     let diff = get_tree_diff(
@@ -362,7 +571,6 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Check total diff size before sending to Claude
     let diff_lines = diff.lines().count();
     let diff_bytes = diff.len();
     let max_lines = max_total_diff_lines();
@@ -376,12 +584,10 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Drop the lock before calling Claude (external process)
     drop(locked_wc);
 
-    // Generate a commit message and create commit
-    info!(language = %args.language, model = %args.model, "Generating commit message with Claude");
-    let generator = CommitMessageGenerator::new(&args.language, &args.model);
+    info!(language = %language, model = %model, "Generating commit message with Claude");
+    let generator = CommitMessageGenerator::new(language, model);
     let commit_message = match generator.generate(&diff) {
         Some(msg) => msg,
         None => {
@@ -390,11 +596,10 @@ async fn main() -> Result<()> {
     };
     debug!(commit_message = %commit_message, "Generated commit message");
 
-    // Get file change summary for display
     let file_changes = get_file_change_summary(&parent_tree, &current_tree).await;
 
     info!("Creating commit");
-    create_commit(&workspace, &commit_message, current_tree, &file_changes).await?;
+    create_commit(workspace, &commit_message, current_tree, &file_changes).await?;
     info!("Commit created successfully");
 
     Ok(())
