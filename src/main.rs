@@ -28,7 +28,7 @@ use jj_lib::{
     commit::Commit,
     config::{ConfigLayer, ConfigResolutionContext, ConfigSource, StackedConfig, resolve},
     dsl_util::AliasesMap,
-    git::export_refs,
+    git::{GitImportOptions, export_refs, import_refs},
     gitignore::GitIgnoreFile,
     merged_tree::MergedTree,
     object_id::ObjectId,
@@ -627,12 +627,31 @@ fn set_bookmark(repo: &Arc<ReadonlyRepo>, name: &str, commit: &Commit) -> Result
     let mut tx = repo.start_transaction();
     let mut_repo = tx.repo_mut();
 
+    // Import git refs first to sync state (prevents compare-and-swap failures)
+    let import_options = GitImportOptions {
+        auto_local_bookmark: false,
+        abandon_unreachable_commits: true,
+        remote_auto_track_bookmarks: HashMap::new(),
+    };
+    if let Err(e) = import_refs(mut_repo, &import_options) {
+        warn!(error = %e, "Failed to import git refs");
+    }
+
     let target = RefTarget::normal(commit.id().clone());
     mut_repo.set_local_bookmark_target(ref_name, target);
 
-    // Export to git refs so @git stays in sync
-    if let Err(e) = export_refs(mut_repo) {
-        warn!(error = %e, "Failed to export bookmark to git");
+    // Export to git refs - now should succeed since we imported first
+    match export_refs(mut_repo) {
+        Ok(stats) => {
+            if !stats.failed_bookmarks.is_empty() {
+                for (ref_name, reason) in &stats.failed_bookmarks {
+                    warn!(bookmark = %ref_name, reason = ?reason, "Failed to export bookmark");
+                }
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to export refs to git");
+        }
     }
 
     let action = if existed { "move" } else { "create" };
