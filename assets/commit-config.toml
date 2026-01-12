@@ -14,8 +14,10 @@ Generate a short, descriptive bookmark (branch) name for the following commits.
 
 Rules:
 - Use 2-6 lowercase words separated by hyphens (e.g., "add-user-auth", "fix-login-redirect")
-- Derive the name from the overall theme/purpose of the commits
-- Be specific but concise - capture the main change
+- Each word segment MUST start with a letter, NOT a digit (e.g., "v2-support" not "2-support")
+- Do NOT include version numbers as separate segments (e.g., "update-parser" not "update-parser-0-11-0")
+- Focus on the single most significant change - do NOT try to cover all changes
+- Be specific but concise
 - Do NOT use dates, ticket numbers, or generic names like "update-code"
 - Do NOT use prefixes like "feature/", "fix/", etc.
 
