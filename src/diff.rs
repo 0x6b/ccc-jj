@@ -226,10 +226,10 @@ pub async fn get_tree_diff(
                     read_file_content(repo, &entry.path, after_id)
                 )?;
 
-                match (
-                    String::from_utf8(before_content.clone()),
-                    String::from_utf8(after_content.clone()),
-                ) {
+                // Compute byte_size before consuming the buffers
+                let byte_size = before_content.len().max(after_content.len());
+
+                match (String::from_utf8(before_content), String::from_utf8(after_content)) {
                     (Ok(before_text), Ok(after_text)) => {
                         let diff = TextDiff::from_lines(&before_text, &after_text);
                         let added = diff
@@ -240,7 +240,6 @@ pub async fn get_tree_diff(
                             .iter_all_changes()
                             .filter(|c| c.tag() == similar::ChangeTag::Delete)
                             .count();
-                        let byte_size = before_content.len().max(after_content.len());
                         let should_collapse_size =
                             added + removed > max_diff_lines || byte_size > max_diff_bytes;
                         trace!(path = %path_str, collapsed = should_collapse, collapsed_size = should_collapse_size, lines = added + removed, bytes = byte_size, "Processing modified file");

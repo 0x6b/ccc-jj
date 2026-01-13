@@ -18,15 +18,16 @@ use bookmark_generator::BookmarkGenerator;
 use chrono::Local;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use commit_message_generator::{
-    CommitMessageGenerator, collapse_patterns, max_diff_bytes, max_diff_lines,
-    max_total_diff_bytes, max_total_diff_lines,
+use commit_message_generator::CommitMessageGenerator;
+use config::{
+    collapse_patterns, max_diff_bytes, max_diff_lines, max_total_diff_bytes, max_total_diff_lines,
 };
 use console::strip_ansi_codes;
 use diff::{FileChangeSummary, build_collapse_matcher, get_file_change_summary, get_tree_diff};
 use dirs::{config_dir, home_dir};
 use gethostname::gethostname;
 use jj_lib::{
+    backend::CommitId,
     commit::Commit,
     config::{ConfigLayer, ConfigResolutionContext, ConfigSource, StackedConfig, resolve},
     dsl_util::AliasesMap,
@@ -104,31 +105,22 @@ impl Default for Commands {
 
 /// Load user configuration from standard jj config locations
 fn load_user_config(config: &mut StackedConfig) -> Result<()> {
-    if let Some(home_dir) = home_dir() {
-        // Try to load from ~/.jjconfig.toml
-        let home_config = home_dir.join(".jjconfig.toml");
-        if home_config.exists() {
-            let layer = ConfigLayer::load_from_file(ConfigSource::User, home_config)?;
-            config.add_layer(layer);
-        }
+    let home = home_dir();
+    let candidates: Vec<PathBuf> = [
+        home.as_ref().map(|h| h.join(".jjconfig.toml")),
+        home.as_ref().map(|h| h.join(".config/jj/config.toml")),
+        config_dir().map(|c| c.join("jj/config.toml")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
 
-        // Try to load from ~/.config/jj/config.toml (XDG-style on Unix)
-        let xdg_config = home_dir.join(".config").join("jj").join("config.toml");
-        if xdg_config.exists() {
-            let layer = ConfigLayer::load_from_file(ConfigSource::User, xdg_config)?;
-            config.add_layer(layer);
-        }
-    }
-
-    // Also try platform-specific config directory (for Windows/macOS)
-    if let Some(config_dir) = config_dir() {
-        let platform_config = config_dir.join("jj").join("config.toml");
-        if platform_config.exists() {
-            let layer = ConfigLayer::load_from_file(ConfigSource::User, platform_config)?;
+    for path in candidates {
+        if path.exists() {
+            let layer = ConfigLayer::load_from_file(ConfigSource::User, path)?;
             config.add_layer(layer);
         }
     }
-
     Ok(())
 }
 
@@ -508,7 +500,7 @@ fn evaluate_revset(
     repo: &Arc<ReadonlyRepo>,
     workspace: &Workspace,
     revset_str: &str,
-) -> Result<Vec<jj_lib::backend::CommitId>> {
+) -> Result<Vec<CommitId>> {
     let settings = repo.settings();
     let extensions = RevsetExtensions::new();
     let aliases_map: RevsetAliasesMap = AliasesMap::new();
@@ -629,80 +621,79 @@ async fn run_commit(workspace: &Workspace, language: &str, model: &str) -> Resul
     let wc_commit = repo.store().get_commit(wc_commit_id)?;
     debug!(wc_commit_id = %wc_commit_id.hex(), "Working copy commit");
 
-    debug!("Starting working copy mutation");
-    let mut locked_wc = workspace.working_copy().start_mutation()?;
+    // Scope the working copy lock - it's automatically released at the end of this block
+    let (current_tree, parent_tree, diff) = {
+        debug!("Starting working copy mutation");
+        let mut locked_wc = workspace.working_copy().start_mutation()?;
 
-    let base_ignores = load_base_ignores(workspace.workspace_root())?;
-    debug!("Loaded base ignores");
+        let base_ignores = load_base_ignores(workspace.workspace_root())?;
+        debug!("Loaded base ignores");
 
-    let snapshot_options = SnapshotOptions {
-        base_ignores,
-        progress: None,
-        start_tracking_matcher: &jj_lib::matchers::EverythingMatcher,
-        force_tracking_matcher: &jj_lib::matchers::NothingMatcher,
-        max_new_file_size: 1024 * 1024 * 100,
-    };
-    debug!("Taking snapshot of working copy");
-    let (current_tree, _stats) = locked_wc.snapshot(&snapshot_options).await?;
-    debug!("Snapshot complete");
+        let snapshot_options = SnapshotOptions {
+            base_ignores,
+            progress: None,
+            start_tracking_matcher: &jj_lib::matchers::EverythingMatcher,
+            force_tracking_matcher: &jj_lib::matchers::NothingMatcher,
+            max_new_file_size: 1024 * 1024 * 100,
+        };
+        debug!("Taking snapshot of working copy");
+        let (current_tree, _stats) = locked_wc.snapshot(&snapshot_options).await?;
+        debug!("Snapshot complete");
 
-    let parent_tree = if !wc_commit.parent_ids().is_empty() {
-        let parent_commit = repo.store().get_commit(&wc_commit.parent_ids()[0])?;
-        parent_commit.tree()
-    } else {
-        jj_lib::merged_tree::MergedTree::resolved(
-            repo.store().clone(),
-            repo.store().empty_tree_id().clone(),
+        let parent_tree = if !wc_commit.parent_ids().is_empty() {
+            let parent_commit = repo.store().get_commit(&wc_commit.parent_ids()[0])?;
+            parent_commit.tree()
+        } else {
+            jj_lib::merged_tree::MergedTree::resolved(
+                repo.store().clone(),
+                repo.store().empty_tree_id().clone(),
+            )
+        };
+
+        if current_tree.tree_ids() == parent_tree.tree_ids() {
+            println!("No changes detected, nothing to commit");
+            return Ok(());
+        }
+        debug!("Changes detected in working copy");
+
+        if !wc_commit.description().is_empty() {
+            warn!(description = %wc_commit.description(), "Working copy already has description, skipping");
+            return Ok(());
+        }
+
+        debug!("Generating diff");
+        let collapse_matcher = build_collapse_matcher(collapse_patterns());
+        let diff = get_tree_diff(
+            &repo,
+            &parent_tree,
+            &current_tree,
+            collapse_matcher.as_ref(),
+            max_diff_lines(),
+            max_diff_bytes(),
         )
-    };
+        .await?;
+        debug!(diff_len = diff.len(), "Diff generated");
+        trace!(diff = %diff, "Full diff content");
 
-    if current_tree.tree_ids() == parent_tree.tree_ids() {
-        println!("No changes detected, nothing to commit");
-        drop(locked_wc);
-        return Ok(());
-    }
-    debug!("Changes detected in working copy");
+        if diff.trim().is_empty() {
+            println!("Empty diff, nothing to commit");
+            return Ok(());
+        }
 
-    if !wc_commit.description().is_empty() {
-        warn!(description = %wc_commit.description(), "Working copy already has description, skipping");
-        drop(locked_wc);
-        return Ok(());
-    }
+        let diff_lines = diff.lines().count();
+        let diff_bytes = diff.len();
+        let max_lines = max_total_diff_lines();
+        let max_bytes = max_total_diff_bytes();
 
-    debug!("Generating diff");
-    let collapse_matcher = build_collapse_matcher(collapse_patterns());
-    let diff = get_tree_diff(
-        &repo,
-        &parent_tree,
-        &current_tree,
-        collapse_matcher.as_ref(),
-        max_diff_lines(),
-        max_diff_bytes(),
-    )
-    .await?;
-    debug!(diff_len = diff.len(), "Diff generated");
-    trace!(diff = %diff, "Full diff content");
+        if diff_lines > max_lines || diff_bytes > max_bytes {
+            bail!(
+                "Diff too large to generate commit message: {diff_lines} lines / {diff_bytes} bytes (limits: {max_lines} lines / {max_bytes} bytes). \
+                Consider committing in smaller chunks or using `jj describe` to set the message manually."
+            );
+        }
 
-    if diff.trim().is_empty() {
-        println!("Empty diff, nothing to commit");
-        drop(locked_wc);
-        return Ok(());
-    }
-
-    let diff_lines = diff.lines().count();
-    let diff_bytes = diff.len();
-    let max_lines = max_total_diff_lines();
-    let max_bytes = max_total_diff_bytes();
-
-    if diff_lines > max_lines || diff_bytes > max_bytes {
-        drop(locked_wc);
-        bail!(
-            "Diff too large to generate commit message: {diff_lines} lines / {diff_bytes} bytes (limits: {max_lines} lines / {max_bytes} bytes). \
-            Consider committing in smaller chunks or using `jj describe` to set the message manually."
-        );
-    }
-
-    drop(locked_wc);
+        (current_tree, parent_tree, diff)
+    }; // locked_wc is automatically dropped here
 
     info!(language = %language, model = %model, "Generating commit message with Claude");
     let generator = CommitMessageGenerator::new(language, model);

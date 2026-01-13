@@ -4,7 +4,7 @@ use std::{
 };
 
 use indicatif::{ProgressBar, ProgressStyle};
-use serde_json::Value;
+use serde_json::{Value, from_str};
 use tracing::{debug, trace, warn};
 
 /// Configuration for Claude CLI invocation
@@ -87,7 +87,7 @@ pub fn invoke_claude(request: &ClaudeRequest<'_>) -> Option<Value> {
 
 /// Parse Claude CLI JSON output and extract the structured_output field.
 fn parse_structured_output(raw_output: &str) -> Option<Value> {
-    match serde_json::from_str::<Value>(raw_output) {
+    match from_str::<Value>(raw_output) {
         Ok(json) => {
             let structured = if let Some(arr) = json.as_array() {
                 arr.iter()

@@ -3,8 +3,10 @@ use std::sync::LazyLock;
 use regex::Regex;
 use tracing::{debug, trace, warn};
 
-use crate::claude_client::{ClaudeRequest, invoke_claude};
-use crate::config::CONFIG;
+use crate::{
+    claude_client::{ClaudeRequest, invoke_claude},
+    config::CONFIG,
+};
 
 static VALID_BOOKMARK_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[a-z][a-z0-9]*(-[a-z][a-z0-9]*){1,5}$").expect("Failed to compile bookmark regex")
@@ -58,7 +60,11 @@ impl BookmarkGenerator {
 
         let structured = invoke_claude(&request)?;
 
-        let bookmark = structured.get("bookmark").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let bookmark = structured
+            .get("bookmark")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
 
         if bookmark.is_empty() {
             warn!("Claude CLI returned empty bookmark");

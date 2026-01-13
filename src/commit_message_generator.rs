@@ -1,14 +1,12 @@
 use std::sync::LazyLock;
 
 use regex::Regex;
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, warn};
 
-use crate::claude_client::{ClaudeRequest, invoke_claude};
-use crate::config::CONFIG;
-use crate::text_formatter::format_text;
-
-pub use crate::config::{
-    collapse_patterns, max_diff_bytes, max_diff_lines, max_total_diff_bytes, max_total_diff_lines,
+use crate::{
+    claude_client::{ClaudeRequest, invoke_claude},
+    config::CONFIG,
+    text_formatter::format_text,
 };
 
 static CONVENTIONAL_COMMIT_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -89,15 +87,12 @@ impl CommitMessageGenerator {
         let body = structured.get("body").and_then(|v| v.as_str()).unwrap_or("").trim();
 
         if title.is_empty() {
-            tracing::warn!("Claude CLI returned empty title");
+            warn!("Claude CLI returned empty title");
             return None;
         }
 
-        let message = if body.is_empty() {
-            title.to_string()
-        } else {
-            format!("{title}\n\n{body}")
-        };
+        let message =
+            if body.is_empty() { title.to_string() } else { format!("{title}\n\n{body}") };
         trace!(message = %message, "Claude CLI output");
         Some(message)
     }
