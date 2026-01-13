@@ -1,5 +1,7 @@
 mod bookmark_generator;
+mod claude_client;
 mod commit_message_generator;
+mod config;
 mod diff;
 mod text_formatter;
 
@@ -436,38 +438,11 @@ fn find_existing_bookmark_in_range(
     from: &str,
     to: &str,
 ) -> Result<Option<String>> {
-    let settings = repo.settings();
-    let extensions = RevsetExtensions::new();
-    let aliases_map: RevsetAliasesMap = AliasesMap::new();
-    let path_converter = RepoPathUiConverter::Fs {
-        cwd: workspace.workspace_root().to_path_buf(),
-        base: workspace.workspace_root().to_path_buf(),
-    };
-    let workspace_ctx = RevsetWorkspaceContext {
-        path_converter: &path_converter,
-        workspace_name: workspace.workspace_name(),
-    };
-    let context = RevsetParseContext {
-        aliases_map: &aliases_map,
-        local_variables: HashMap::new(),
-        user_email: settings.user_email(),
-        date_pattern_context: DatePatternContext::Local(Local::now()),
-        default_ignored_remote: None,
-        use_glob_by_default: false,
-        extensions: &extensions,
-        workspace: Some(workspace_ctx),
-    };
-
     let revset_str = format!("{from}..{to}");
-    let mut diagnostics = RevsetDiagnostics::new();
-    let expression = parse(&mut diagnostics, &revset_str, &context)?;
-    let symbol_resolver = SymbolResolver::new(repo.as_ref(), extensions.symbol_resolvers());
-    let resolved = expression.resolve_user_expression(repo.as_ref(), &symbol_resolver)?;
-    let revset = resolved.evaluate(repo.as_ref())?;
+    let commit_ids = evaluate_revset(repo, workspace, &revset_str)?;
 
     let view = repo.view();
-    for commit_id in revset.iter() {
-        let commit_id = commit_id?;
+    for commit_id in commit_ids {
         for (name, target) in view.local_bookmarks() {
             if target.added_ids().any(|id| id == &commit_id) {
                 return Ok(Some(name.as_str().to_string()));
@@ -528,12 +503,12 @@ fn find_default_base(repo: &Arc<ReadonlyRepo>) -> Result<String> {
     bail!("Could not find main@origin or main bookmark. Please specify --from explicitly.")
 }
 
-fn get_commit_summaries(
+/// Evaluate a revset expression and return the matching commit IDs.
+fn evaluate_revset(
     repo: &Arc<ReadonlyRepo>,
     workspace: &Workspace,
-    from: &str,
-    to: &str,
-) -> Result<String> {
+    revset_str: &str,
+) -> Result<Vec<jj_lib::backend::CommitId>> {
     let settings = repo.settings();
     let extensions = RevsetExtensions::new();
     let aliases_map: RevsetAliasesMap = AliasesMap::new();
@@ -556,16 +531,26 @@ fn get_commit_summaries(
         workspace: Some(workspace_ctx),
     };
 
-    let revset_str = format!("{from}..{to}");
     let mut diagnostics = RevsetDiagnostics::new();
-    let expression = parse(&mut diagnostics, &revset_str, &context)?;
+    let expression = parse(&mut diagnostics, revset_str, &context)?;
     let symbol_resolver = SymbolResolver::new(repo.as_ref(), extensions.symbol_resolvers());
     let resolved = expression.resolve_user_expression(repo.as_ref(), &symbol_resolver)?;
     let revset = resolved.evaluate(repo.as_ref())?;
+    revset.iter().collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn get_commit_summaries(
+    repo: &Arc<ReadonlyRepo>,
+    workspace: &Workspace,
+    from: &str,
+    to: &str,
+) -> Result<String> {
+    let revset_str = format!("{from}..{to}");
+    let commit_ids = evaluate_revset(repo, workspace, &revset_str)?;
 
     let mut summaries = Vec::new();
-    for commit_id in revset.iter() {
-        let commit = repo.store().get_commit(&commit_id?)?;
+    for commit_id in commit_ids {
+        let commit = repo.store().get_commit(&commit_id)?;
         let desc = commit.description().trim();
         if !desc.is_empty() {
             summaries.push(format!("- {}", desc.lines().next().unwrap_or("")));
@@ -580,36 +565,10 @@ fn resolve_single_commit(
     workspace: &Workspace,
     rev: &str,
 ) -> Result<Commit> {
-    let settings = repo.settings();
-    let extensions = RevsetExtensions::new();
-    let aliases_map: RevsetAliasesMap = AliasesMap::new();
-    let path_converter = RepoPathUiConverter::Fs {
-        cwd: workspace.workspace_root().to_path_buf(),
-        base: workspace.workspace_root().to_path_buf(),
-    };
-    let workspace_ctx = RevsetWorkspaceContext {
-        path_converter: &path_converter,
-        workspace_name: workspace.workspace_name(),
-    };
-    let context = RevsetParseContext {
-        aliases_map: &aliases_map,
-        local_variables: HashMap::new(),
-        user_email: settings.user_email(),
-        date_pattern_context: DatePatternContext::Local(Local::now()),
-        default_ignored_remote: None,
-        use_glob_by_default: false,
-        extensions: &extensions,
-        workspace: Some(workspace_ctx),
-    };
+    let commit_ids = evaluate_revset(repo, workspace, rev)?;
 
-    let mut diagnostics = RevsetDiagnostics::new();
-    let expression = parse(&mut diagnostics, rev, &context)?;
-    let symbol_resolver = SymbolResolver::new(repo.as_ref(), extensions.symbol_resolvers());
-    let resolved = expression.resolve_user_expression(repo.as_ref(), &symbol_resolver)?;
-    let revset = resolved.evaluate(repo.as_ref())?;
-
-    let mut iter = revset.iter();
-    let commit_id = iter.next().context("Revset resolved to no commits")??;
+    let mut iter = commit_ids.into_iter();
+    let commit_id = iter.next().context("Revset resolved to no commits")?;
 
     if iter.next().is_some() {
         bail!("Revset '{rev}' resolved to multiple commits, expected single commit");
