@@ -6,7 +6,7 @@ mod diff;
 mod text_formatter;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env::{current_dir, var},
     path::{Path, PathBuf},
     process::Command,
@@ -19,9 +19,7 @@ use chrono::Local;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use commit_message_generator::CommitMessageGenerator;
-use config::{
-    collapse_patterns, max_diff_bytes, max_diff_lines, max_total_diff_bytes, max_total_diff_lines,
-};
+use config::CONFIG;
 use console::strip_ansi_codes;
 use diff::{FileChangeSummary, build_collapse_matcher, get_file_change_summary, get_tree_diff};
 use dirs::{config_dir, home_dir};
@@ -431,14 +429,11 @@ fn find_existing_bookmark_in_range(
     to: &str,
 ) -> Result<Option<String>> {
     let revset_str = format!("{from}..{to}");
-    let commit_ids = evaluate_revset(repo, workspace, &revset_str)?;
+    let commit_ids: HashSet<_> = evaluate_revset(repo, workspace, &revset_str)?.into_iter().collect();
 
-    let view = repo.view();
-    for commit_id in commit_ids {
-        for (name, target) in view.local_bookmarks() {
-            if target.added_ids().any(|id| id == &commit_id) {
-                return Ok(Some(name.as_str().to_string()));
-            }
+    for (name, target) in repo.view().local_bookmarks() {
+        if target.added_ids().any(|id| commit_ids.contains(id)) {
+            return Ok(Some(name.as_str().to_string()));
         }
     }
     Ok(None)
@@ -557,16 +552,11 @@ fn resolve_single_commit(
     workspace: &Workspace,
     rev: &str,
 ) -> Result<Commit> {
-    let commit_ids = evaluate_revset(repo, workspace, rev)?;
-
-    let mut iter = commit_ids.into_iter();
-    let commit_id = iter.next().context("Revset resolved to no commits")?;
-
-    if iter.next().is_some() {
-        bail!("Revset '{rev}' resolved to multiple commits, expected single commit");
+    match evaluate_revset(repo, workspace, rev)?.as_slice() {
+        [id] => repo.store().get_commit(id).map_err(Into::into),
+        [] => bail!("Revset resolved to no commits"),
+        _ => bail!("Revset '{rev}' resolved to multiple commits, expected single commit"),
     }
-
-    repo.store().get_commit(&commit_id).map_err(Into::into)
 }
 
 /// Set bookmark to point to commit. Returns true if bookmark already existed (moved), false if
@@ -662,14 +652,14 @@ async fn run_commit(workspace: &Workspace, language: &str, model: &str) -> Resul
         }
 
         debug!("Generating diff");
-        let collapse_matcher = build_collapse_matcher(collapse_patterns());
+        let collapse_matcher = build_collapse_matcher(&CONFIG.diff.collapse_patterns);
         let diff = get_tree_diff(
             &repo,
             &parent_tree,
             &current_tree,
             collapse_matcher.as_ref(),
-            max_diff_lines(),
-            max_diff_bytes(),
+            CONFIG.diff.max_diff_lines,
+            CONFIG.diff.max_diff_bytes,
         )
         .await?;
         debug!(diff_len = diff.len(), "Diff generated");
@@ -682,8 +672,8 @@ async fn run_commit(workspace: &Workspace, language: &str, model: &str) -> Resul
 
         let diff_lines = diff.lines().count();
         let diff_bytes = diff.len();
-        let max_lines = max_total_diff_lines();
-        let max_bytes = max_total_diff_bytes();
+        let max_lines = CONFIG.diff.max_total_diff_lines;
+        let max_bytes = CONFIG.diff.max_total_diff_bytes;
 
         if diff_lines > max_lines || diff_bytes > max_bytes {
             bail!(

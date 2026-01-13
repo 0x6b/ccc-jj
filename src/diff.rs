@@ -1,7 +1,6 @@
-use std::fmt::{self, Display, Write};
+use std::fmt::Write;
 
 use anyhow::Result;
-use fmt::Formatter;
 use futures::StreamExt;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use jj_lib::{
@@ -20,21 +19,6 @@ pub struct FileChangeSummary {
     pub added: Vec<String>,
     pub deleted: Vec<String>,
     pub modified: Vec<String>,
-}
-
-impl Display for FileChangeSummary {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        for file in &self.added {
-            writeln!(f, " A {file}")?;
-        }
-        for file in &self.deleted {
-            writeln!(f, " D {file}")?;
-        }
-        for file in &self.modified {
-            writeln!(f, " M {file}")?;
-        }
-        Ok(())
-    }
 }
 
 const MAX_LINES: usize = 50;

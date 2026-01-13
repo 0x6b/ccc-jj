@@ -41,28 +41,3 @@ pub static CONFIG: LazyLock<Config> = LazyLock::new(|| {
     from_str(include_str!("../assets/commit-config.toml"))
         .expect("Failed to parse embedded commit-config.toml")
 });
-
-/// Get the collapse patterns from config
-pub fn collapse_patterns() -> &'static [String] {
-    &CONFIG.diff.collapse_patterns
-}
-
-/// Get the max diff lines threshold from config
-pub fn max_diff_lines() -> usize {
-    CONFIG.diff.max_diff_lines
-}
-
-/// Get the max diff bytes threshold from config
-pub fn max_diff_bytes() -> usize {
-    CONFIG.diff.max_diff_bytes
-}
-
-/// Get the max total diff lines threshold from config
-pub fn max_total_diff_lines() -> usize {
-    CONFIG.diff.max_total_diff_lines
-}
-
-/// Get the max total diff bytes threshold from config
-pub fn max_total_diff_bytes() -> usize {
-    CONFIG.diff.max_total_diff_bytes
-}
