@@ -429,7 +429,8 @@ fn find_existing_bookmark_in_range(
     to: &str,
 ) -> Result<Option<String>> {
     let revset_str = format!("{from}..{to}");
-    let commit_ids: HashSet<_> = evaluate_revset(repo, workspace, &revset_str)?.into_iter().collect();
+    let commit_ids: HashSet<_> =
+        evaluate_revset(repo, workspace, &revset_str)?.into_iter().collect();
 
     for (name, target) in repo.view().local_bookmarks() {
         if target.added_ids().any(|id| commit_ids.contains(id)) {
