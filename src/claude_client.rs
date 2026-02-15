@@ -41,6 +41,7 @@ pub fn invoke_claude(request: &ClaudeRequest<'_>) -> Option<Value> {
     );
 
     let result = Command::new(request.command)
+        .env_remove("CLAUDECODE")
         .args(request.args)
         .arg("--model")
         .arg(request.model)
