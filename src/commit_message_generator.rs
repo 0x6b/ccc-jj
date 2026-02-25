@@ -14,7 +14,7 @@ static CONVENTIONAL_COMMIT_RE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("Failed to compile conventional commit regex")
 });
 
-const JSON_SCHEMA: &str = r#"{"type":"object","properties":{"title":{"type":"string","description":"Commit title in conventional commit format, max 50 chars"},"body":{"type":"string","description":"Optional commit body explaining what and why"}},"required":["title"]}"#;
+const JSON_SCHEMA: &str = r#"{"type":"object","properties":{"commit_type":{"type":"string","enum":["feat","fix","refactor","docs","test","chore","style","perf","build","ci"],"description":"Conventional commit type"},"title":{"type":"string","description":"Commit description without type prefix, max 50 chars, imperative mood"},"body":{"type":"string","description":"Optional commit body explaining what and why"}},"required":["commit_type","title"]}"#;
 
 /// Generates commit messages using Claude CLI based on diff content
 pub struct CommitMessageGenerator {
@@ -83,6 +83,11 @@ impl CommitMessageGenerator {
 
         let structured = invoke_claude(&request)?;
 
+        let commit_type = structured
+            .get("commit_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
         let title = structured.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
         let body = structured.get("body").and_then(|v| v.as_str()).unwrap_or("").trim();
 
@@ -91,8 +96,18 @@ impl CommitMessageGenerator {
             return None;
         }
 
+        // Strip any accidental type prefix the model may have included in the title
+        let title = strip_type_prefix(title);
+
+        let full_title = if commit_type.is_empty() {
+            debug!("commit_type field is empty, using 'chore' as fallback");
+            format!("chore: {title}")
+        } else {
+            format!("{commit_type}: {title}")
+        };
+
         let message =
-            if body.is_empty() { title.to_string() } else { format!("{title}\n\n{body}") };
+            if body.is_empty() { full_title } else { format!("{full_title}\n\n{body}") };
         trace!(message = %message, "Claude CLI output");
         Some(message)
     }
@@ -103,3 +118,18 @@ impl Default for CommitMessageGenerator {
         Self::new("English", "haiku")
     }
 }
+
+/// Strips a conventional commit type prefix if the model redundantly included one in the title.
+/// e.g., "feat: add login" -> "add login", "add login" -> "add login"
+fn strip_type_prefix(title: &str) -> &str {
+    if let Some(m) = TYPE_PREFIX_RE.find(title) {
+        title[m.end()..].trim_start()
+    } else {
+        title
+    }
+}
+
+static TYPE_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:feat|fix|refactor|docs|test|chore|style|perf|build|ci)(?:\([^)]+\))?(?:!)?:\s*")
+        .expect("Failed to compile type prefix regex")
+});
